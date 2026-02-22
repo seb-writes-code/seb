@@ -1,10 +1,7 @@
-import https from 'https';
-import { Api, Bot } from 'grammy';
+import { Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
-import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
-import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
   OnChatMetadata,
@@ -16,29 +13,6 @@ export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
-}
-
-/**
- * Send a message with Telegram Markdown parse mode, falling back to plain text.
- * Claude's output naturally matches Telegram's Markdown v1 format:
- *   *bold*, _italic_, `code`, ```code blocks```, [links](url)
- */
-async function sendTelegramMessage(
-  api: { sendMessage: Api['sendMessage'] },
-  chatId: string | number,
-  text: string,
-  options: { message_thread_id?: number } = {},
-): Promise<void> {
-  try {
-    await api.sendMessage(chatId, text, {
-      ...options,
-      parse_mode: 'Markdown',
-    });
-  } catch (err) {
-    // Fallback: send as plain text if Markdown parsing fails
-    logger.debug({ err }, 'Markdown send failed, falling back to plain text');
-    await api.sendMessage(chatId, text, options);
-  }
 }
 
 export class TelegramChannel implements Channel {
@@ -54,11 +28,7 @@ export class TelegramChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    this.bot = new Bot(this.botToken, {
-      client: {
-        baseFetchConfig: { agent: https.globalAgent, compress: true },
-      },
-    });
+    this.bot = new Bot(this.botToken);
 
     // Command to get chat ID (useful for registration)
     this.bot.command('chatid', (ctx) => {
@@ -80,15 +50,9 @@ export class TelegramChannel implements Channel {
       ctx.reply(`${ASSISTANT_NAME} is online.`);
     });
 
-    // Telegram bot commands handled above — skip them in the general handler
-    // so they don't also get stored as messages. All other /commands flow through.
-    const TELEGRAM_BOT_COMMANDS = new Set(['chatid', 'ping']);
-
     this.bot.on('message:text', async (ctx) => {
-      if (ctx.message.text.startsWith('/')) {
-        const cmd = ctx.message.text.slice(1).split(/[\s@]/)[0].toLowerCase();
-        if (TELEGRAM_BOT_COMMANDS.has(cmd)) return;
-      }
+      // Skip commands
+      if (ctx.message.text.startsWith('/')) return;
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
@@ -128,15 +92,7 @@ export class TelegramChannel implements Channel {
       }
 
       // Store chat metadata for discovery
-      const isGroup =
-        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(
-        chatJid,
-        timestamp,
-        chatName,
-        'telegram',
-        isGroup,
-      );
+      this.opts.onChatMetadata(chatJid, timestamp, chatName);
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
@@ -179,15 +135,7 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
 
-      const isGroup =
-        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(
-        chatJid,
-        timestamp,
-        undefined,
-        'telegram',
-        isGroup,
-      );
+      this.opts.onChatMetadata(chatJid, timestamp);
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -201,7 +149,9 @@ export class TelegramChannel implements Channel {
 
     this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
+    this.bot.on('message:voice', (ctx) =>
+      storeNonText(ctx, '[Voice message]'),
+    );
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
@@ -249,11 +199,10 @@ export class TelegramChannel implements Channel {
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
       if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text);
+        await this.bot.api.sendMessage(numericId, text);
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await sendTelegramMessage(
-            this.bot.api,
+          await this.bot.api.sendMessage(
             numericId,
             text.slice(i, i + MAX_LENGTH),
           );
@@ -291,14 +240,3 @@ export class TelegramChannel implements Channel {
     }
   }
 }
-
-registerChannel('telegram', (opts: ChannelOpts) => {
-  const envVars = readEnvFile(['TELEGRAM_BOT_TOKEN']);
-  const token =
-    process.env.TELEGRAM_BOT_TOKEN || envVars.TELEGRAM_BOT_TOKEN || '';
-  if (!token) {
-    logger.warn('Telegram: TELEGRAM_BOT_TOKEN not set');
-    return null;
-  }
-  return new TelegramChannel(token, opts);
-});
