@@ -55,6 +55,17 @@ Keep messages clean and readable for WhatsApp.
 
 ---
 
+## Email (Gmail)
+
+You have access to Gmail (seb@chrisraible.com) via MCP tools:
+- `mcp__gmail__search_emails` - Search emails with query
+- `mcp__gmail__get_email` - Get full email content by ID
+- `mcp__gmail__send_email` - Send an email
+- `mcp__gmail__draft_email` - Create a draft
+- `mcp__gmail__list_labels` - List available labels
+
+---
+
 ## Admin Context
 
 This is the **main channel**, which has elevated privileges.
