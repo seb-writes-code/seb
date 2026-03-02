@@ -28,7 +28,6 @@ RUN apt-get update && apt-get install -y \
     make \
     g++ \
     python3 \
-    python3-pip \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
@@ -36,8 +35,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y gh caddy default-mysql-server default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ticktick-cli for task management
-RUN pip install ticktick-cli --break-system-packages
+# Install tickrs (TickTick CLI) for task management
+RUN curl -fsSL https://github.com/SpaceK33z/tickrs/releases/download/v0.1.4/tickrs-x86_64-unknown-linux-musl.tar.gz \
+    | tar -xz -C /usr/local/bin tickrs
 
 # Install Mailpit (email testing server)
 RUN curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | bash
