@@ -128,11 +128,11 @@ This is the **main channel**, which has elevated privileges.
 
 ## Container Mounts
 
-Main has access to the entire project:
+Main has read-only access to the project and read-write access to its group folder:
 
 | Container Path | Host Path | Access |
 |----------------|-----------|--------|
-| `/workspace/project` | Project root | read-write |
+| `/workspace/project` | Project root | read-only |
 | `/workspace/group` | `groups/main/` | read-write |
 | `/workspace/extra/obsidian-vault` | `/home/ubuntu/obsidian-vault` | read-write |
 
