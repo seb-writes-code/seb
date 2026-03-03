@@ -129,6 +129,11 @@ export class TelegramChannel implements Channel {
         return;
       }
 
+      // React with eyes emoji so the user knows the message was seen
+      ctx.react('👀').catch((err) =>
+        logger.debug({ chatJid, err }, 'Failed to react with eyes emoji'),
+      );
+
       // Deliver message — startMessageLoop() will pick it up
       this.opts.onMessage(chatJid, {
         id: msgId,
