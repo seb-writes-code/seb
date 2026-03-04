@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  clearAllowlistCache,
   isSenderAllowed,
   isTriggerAllowed,
   loadSenderAllowlist,
@@ -28,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearAllowlistCache();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -112,6 +114,71 @@ describe('loadSenderAllowlist', () => {
     const cfg = loadSenderAllowlist(p);
     expect(cfg.chats['good']).toBeDefined();
     expect(cfg.chats['bad']).toBeUndefined();
+  });
+
+  it('returns cached config on repeated calls with unchanged file', () => {
+    const p = writeConfig({
+      default: { allow: ['alice'], mode: 'trigger' },
+      chats: {},
+    });
+    const cfg1 = loadSenderAllowlist(p);
+    const cfg2 = loadSenderAllowlist(p);
+    // Same object reference means cache was used
+    expect(cfg1).toBe(cfg2);
+  });
+
+  it('re-reads config when file mtime changes', () => {
+    const p = writeConfig({
+      default: { allow: ['alice'], mode: 'trigger' },
+      chats: {},
+    });
+    const cfg1 = loadSenderAllowlist(p);
+    expect(cfg1.default.allow).toEqual(['alice']);
+
+    // Write new content, then bump mtime to ensure cache sees a change
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        default: { allow: ['bob'], mode: 'drop' },
+        chats: {},
+      }),
+    );
+    const future = new Date(Date.now() + 60000);
+    fs.utimesSync(p, future, future);
+
+    const cfg2 = loadSenderAllowlist(p);
+    expect(cfg2.default.allow).toEqual(['bob']);
+    expect(cfg2.default.mode).toBe('drop');
+    expect(cfg2).not.toBe(cfg1);
+  });
+
+  it('cache is per-path', () => {
+    const p1 = writeConfig(
+      { default: { allow: ['alice'], mode: 'trigger' }, chats: {} },
+      'allow1.json',
+    );
+    const p2 = writeConfig(
+      { default: { allow: ['bob'], mode: 'drop' }, chats: {} },
+      'allow2.json',
+    );
+    const cfg1 = loadSenderAllowlist(p1);
+    const cfg2 = loadSenderAllowlist(p2);
+    expect(cfg1.default.allow).toEqual(['alice']);
+    expect(cfg2.default.allow).toEqual(['bob']);
+  });
+
+  it('clearAllowlistCache forces re-read', () => {
+    const p = writeConfig({
+      default: { allow: ['alice'], mode: 'trigger' },
+      chats: {},
+    });
+    const cfg1 = loadSenderAllowlist(p);
+    clearAllowlistCache();
+    const cfg2 = loadSenderAllowlist(p);
+    // Different object reference after cache clear
+    expect(cfg2).not.toBe(cfg1);
+    // But same content
+    expect(cfg2.default.allow).toEqual(['alice']);
   });
 });
 

@@ -20,6 +20,19 @@ const DEFAULT_CONFIG: SenderAllowlistConfig = {
   logDenied: true,
 };
 
+// Cache to avoid reading and parsing the allowlist file on every message.
+// Re-reads only when the file's mtime changes.
+let cachedConfig: SenderAllowlistConfig | null = null;
+let cachedPath: string | null = null;
+let cachedMtimeMs: number = 0;
+
+/** Clear the cache (useful for tests). */
+export function clearAllowlistCache(): void {
+  cachedConfig = null;
+  cachedPath = null;
+  cachedMtimeMs = 0;
+}
+
 function isValidEntry(entry: unknown): entry is ChatAllowlistEntry {
   if (!entry || typeof entry !== 'object') return false;
   const e = entry as Record<string, unknown>;
@@ -34,6 +47,26 @@ export function loadSenderAllowlist(
   pathOverride?: string,
 ): SenderAllowlistConfig {
   const filePath = pathOverride ?? SENDER_ALLOWLIST_PATH;
+
+  // Check mtime to avoid re-reading unchanged files on every message.
+  // stat is much cheaper than readFile + JSON.parse.
+  try {
+    const stat = fs.statSync(filePath);
+    if (
+      cachedConfig &&
+      cachedPath === filePath &&
+      stat.mtimeMs === cachedMtimeMs
+    ) {
+      return cachedConfig;
+    }
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return DEFAULT_CONFIG;
+    logger.warn(
+      { err, path: filePath },
+      'sender-allowlist: cannot stat config',
+    );
+    return DEFAULT_CONFIG;
+  }
 
   let raw: string;
   try {
@@ -81,11 +114,23 @@ export function loadSenderAllowlist(
     }
   }
 
-  return {
+  const config: SenderAllowlistConfig = {
     default: obj.default as ChatAllowlistEntry,
     chats,
     logDenied: obj.logDenied !== false,
   };
+
+  // Update cache
+  cachedConfig = config;
+  cachedPath = filePath;
+  try {
+    cachedMtimeMs = fs.statSync(filePath).mtimeMs;
+  } catch {
+    // File disappeared between read and stat — don't cache
+    cachedConfig = null;
+  }
+
+  return config;
 }
 
 function getEntry(
