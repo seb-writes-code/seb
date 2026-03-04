@@ -13,7 +13,10 @@ import {
 } from './config.js';
 import { WhatsAppChannel } from './channels/whatsapp.js';
 import { TelegramChannel } from './channels/telegram.js';
-import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
+import {
+  cleanupOrphans,
+  ensureContainerRuntimeRunning,
+} from './container-runtime.js';
 import {
   ContainerOutput,
   runContainerAgent,

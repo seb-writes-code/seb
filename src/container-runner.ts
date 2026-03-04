@@ -188,7 +188,8 @@ function buildVolumeMounts(
   });
 
   // Gmail credentials directory
-  const gmailDir = path.join(os.homedir(), '.gmail-mcp');
+  const homeDir = process.env.HOME || os.homedir();
+  const gmailDir = path.join(homeDir, '.gmail-mcp');
   if (fs.existsSync(gmailDir)) {
     mounts.push({
       hostPath: gmailDir,
