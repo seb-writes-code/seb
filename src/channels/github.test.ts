@@ -1,9 +1,10 @@
 import crypto from 'crypto';
 import http from 'http';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { _initTestDatabase, storeMessage } from './db.js';
-import { formatEvent, startWebhookServer } from './github-webhooks.js';
+import { _initTestDatabase } from '../db.js';
+import { NewMessage, RegisteredGroup } from '../types.js';
+import { formatEvent, GitHubChannel, repoToJid } from './github.js';
 
 // -------------------------------------------------------------------
 // formatEvent — pure function tests
@@ -310,35 +311,47 @@ describe('formatEvent', () => {
 });
 
 // -------------------------------------------------------------------
-// HTTP server integration tests
+// repoToJid
 // -------------------------------------------------------------------
 
-describe('webhook HTTP server', () => {
+describe('repoToJid', () => {
+  it('converts repo full name to JID', () => {
+    expect(repoToJid('cmraible/seb')).toBe('gh:cmraible/seb');
+  });
+});
+
+// -------------------------------------------------------------------
+// GitHubChannel — Channel interface tests
+// -------------------------------------------------------------------
+
+describe('GitHubChannel', () => {
   const SECRET = 'test-secret-123';
-  const TARGET_JID = 'test@g.us';
-  let server: http.Server;
+  let channel: GitHubChannel;
   let port: number;
+  let messages: NewMessage[];
+  let metadataCalls: Array<{ jid: string; name?: string }>;
 
   beforeEach(async () => {
     _initTestDatabase();
-    // Use port 0 to get a random available port
-    server = startWebhookServer({
-      secret: SECRET,
-      port: 0,
-      targetJid: TARGET_JID,
-      triggerPrefix: '@Seb',
+    messages = [];
+    metadataCalls = [];
+
+    channel = new GitHubChannel({
+      onMessage: (_chatJid, msg) => messages.push(msg),
+      onChatMetadata: (chatJid, _ts, name) =>
+        metadataCalls.push({ jid: chatJid, name }),
+      registeredGroups: () => ({}),
+      webhookSecret: SECRET,
+      port: 0, // random available port
     });
-    await new Promise<void>((resolve) => {
-      server.once('listening', resolve);
-    });
-    const addr = server.address();
+    await channel.connect();
+
+    const addr = (channel as any).server?.address();
     port = typeof addr === 'object' && addr ? addr.port : 0;
   });
 
   afterEach(async () => {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+    await channel.disconnect();
   });
 
   function sign(body: string): string {
@@ -378,6 +391,29 @@ describe('webhook HTTP server', () => {
     });
   }
 
+  // Channel interface
+
+  it('ownsJid matches gh: prefix', () => {
+    expect(channel.ownsJid('gh:cmraible/seb')).toBe(true);
+    expect(channel.ownsJid('tg:123')).toBe(false);
+    expect(channel.ownsJid('12345@g.us')).toBe(false);
+  });
+
+  it('isConnected returns true after connect', () => {
+    expect(channel.isConnected()).toBe(true);
+  });
+
+  it('isConnected returns false after disconnect', async () => {
+    await channel.disconnect();
+    expect(channel.isConnected()).toBe(false);
+  });
+
+  it('has name "github"', () => {
+    expect(channel.name).toBe('github');
+  });
+
+  // Webhook HTTP server
+
   it('rejects invalid signature', async () => {
     const body = JSON.stringify({ action: 'assigned' });
     const res = await post('/webhooks/github', body, {
@@ -397,7 +433,7 @@ describe('webhook HTTP server', () => {
     expect(res.status).toBe(401);
   });
 
-  it('accepts valid signed webhook and returns 200', async () => {
+  it('accepts valid signed webhook and stores message', async () => {
     const body = JSON.stringify({
       action: 'assigned',
       sender: { login: 'cmraible' },
@@ -415,6 +451,50 @@ describe('webhook HTTP server', () => {
     });
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ received: true });
+
+    // Verify message was delivered via onMessage
+    expect(messages).toHaveLength(1);
+    expect(messages[0].chat_jid).toBe('gh:cmraible/seb');
+    expect(messages[0].sender).toBe('github');
+    expect(messages[0].content).toMatch(/^@\w+/); // trigger prefix
+    expect(messages[0].content).toContain('Test issue');
+  });
+
+  it('stores chat metadata on relevant events', async () => {
+    const body = JSON.stringify({
+      action: 'assigned',
+      sender: { login: 'cmraible' },
+      issue: {
+        number: 1,
+        title: 'Test',
+        assignee: { login: 'seb-writes-code' },
+      },
+      repository: { full_name: 'cmraible/seb' },
+    });
+    await post('/webhooks/github', body, {
+      'X-Hub-Signature-256': sign(body),
+      'X-GitHub-Event': 'issues',
+      'X-GitHub-Delivery': 'test-4',
+    });
+
+    expect(metadataCalls).toHaveLength(1);
+    expect(metadataCalls[0].jid).toBe('gh:cmraible/seb');
+    expect(metadataCalls[0].name).toBe('cmraible/seb');
+  });
+
+  it('does not store message for filtered events', async () => {
+    const body = JSON.stringify({
+      action: 'created',
+      sender: { login: 'cmraible' },
+      repository: { full_name: 'cmraible/seb' },
+    });
+    const res = await post('/webhooks/github', body, {
+      'X-Hub-Signature-256': sign(body),
+      'X-GitHub-Event': 'star',
+      'X-GitHub-Delivery': 'test-5',
+    });
+    expect(res.status).toBe(200);
+    expect(messages).toHaveLength(0);
   });
 
   it('returns 404 for wrong path', async () => {

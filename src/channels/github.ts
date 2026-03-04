@@ -1,18 +1,25 @@
 /**
- * GitHub webhook server — receives GitHub App events and injects them
- * into the NanoClaw message pipeline.
+ * GitHub channel — receives webhook events from a GitHub App and
+ * injects them into the NanoClaw message pipeline.
  *
- * Uses Node's built-in http module (no Express). Events are verified
- * via HMAC-SHA256, filtered for relevance, and stored as NewMessage
- * objects for the existing message loop to pick up.
+ * JID format: gh:{owner}/{repo}  (e.g. gh:cmraible/seb)
+ *
+ * Implements the Channel interface so it integrates with the existing
+ * multi-channel routing, message loop, and group registration.
  */
 import crypto from 'crypto';
+import express from 'express';
 import http from 'http';
 
-import { storeMessage, storeChatMetadata } from './db.js';
-import { readEnvFile } from './env.js';
-import { logger } from './logger.js';
-import type { NewMessage } from './types.js';
+import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { readEnvFile } from '../env.js';
+import { logger } from '../logger.js';
+import {
+  Channel,
+  OnChatMetadata,
+  OnInboundMessage,
+  RegisteredGroup,
+} from '../types.js';
 
 /** Read the webhook secret from .env at startup (not cached in process.env). */
 export function readWebhookSecret(): string {
@@ -25,15 +32,14 @@ export function readWebhookSecret(): string {
 /** GitHub username that the agent operates as. */
 const GITHUB_USERNAME = 'seb-writes-code';
 
-export interface WebhookServerOpts {
+export interface GitHubChannelOpts {
+  onMessage: OnInboundMessage;
+  onChatMetadata: OnChatMetadata;
+  registeredGroups: () => Record<string, RegisteredGroup>;
   /** HMAC secret shared with the GitHub App. */
-  secret: string;
+  webhookSecret: string;
   /** Port to listen on. */
   port: number;
-  /** JID of the group to route messages to. */
-  targetJid: string;
-  /** Trigger prefix (e.g. "@Seb") to prepend so the message matches the trigger pattern. */
-  triggerPrefix: string;
 }
 
 // -------------------------------------------------------------------
@@ -85,7 +91,6 @@ export function formatEvent(ev: GitHubEvent): string | null {
       if (action !== 'assigned') return null;
       const issue = payload.issue;
       if (!issue) return null;
-      // Only care if assigned to us
       if (issue.assignee?.login !== GITHUB_USERNAME) return null;
       return `${sender} assigned you to issue ${repo}#${issue.number}: "${issue.title}"\nhttps://github.com/${repo}/issues/${issue.number}`;
     }
@@ -94,7 +99,6 @@ export function formatEvent(ev: GitHubEvent): string | null {
       if (action !== 'review_requested') return null;
       const pr = payload.pull_request;
       if (!pr) return null;
-      // Only care if review requested from us
       const requested = payload.requested_reviewer?.login;
       if (requested !== GITHUB_USERNAME) return null;
       return `${sender} requested your review on PR ${repo}#${pr.number}: "${pr.title}"\nhttps://github.com/${repo}/pull/${pr.number}`;
@@ -105,7 +109,6 @@ export function formatEvent(ev: GitHubEvent): string | null {
       const issue = payload.issue;
       const comment = payload.comment;
       if (!issue || !comment) return null;
-      // Only care if on an issue/PR we authored or are assigned to
       const isOurs =
         issue.user?.login === GITHUB_USERNAME ||
         issue.assignee?.login === GITHUB_USERNAME ||
@@ -121,7 +124,7 @@ export function formatEvent(ev: GitHubEvent): string | null {
       const review = payload.review;
       if (!pr || !review) return null;
       if (pr.user?.login !== GITHUB_USERNAME) return null;
-      const state = review.state; // approved, changes_requested, commented
+      const state = review.state;
       const stateLabel =
         state === 'approved'
           ? 'approved'
@@ -145,7 +148,6 @@ export function formatEvent(ev: GitHubEvent): string | null {
       if (action !== 'completed') return null;
       const suite = payload.check_suite;
       if (!suite) return null;
-      // Only care about failures on our PRs
       if (suite.conclusion === 'success') return null;
       const prs = suite.pull_requests ?? [];
       const ourPr = prs.find(
@@ -166,41 +168,48 @@ function truncate(s: string | null | undefined, max: number): string {
   return s.slice(0, max) + '…';
 }
 
+/** Convert a repo full_name (e.g. "cmraible/seb") to a channel JID. */
+export function repoToJid(repoFullName: string): string {
+  return `gh:${repoFullName}`;
+}
+
 // -------------------------------------------------------------------
-// HTTP server
+// Channel implementation
 // -------------------------------------------------------------------
 
-export function startWebhookServer(opts: WebhookServerOpts): http.Server {
-  const { secret, port, targetJid, triggerPrefix } = opts;
+export class GitHubChannel implements Channel {
+  name = 'github';
 
-  const server = http.createServer((req, res) => {
-    // Health check
-    if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok' }));
-      return;
-    }
+  private opts: GitHubChannelOpts;
+  private server: http.Server | null = null;
+  private connected = false;
 
-    // Only accept POST to /webhooks/github
-    if (req.method !== 'POST' || req.url !== '/webhooks/github') {
-      res.writeHead(404);
-      res.end('Not found');
-      return;
-    }
+  constructor(opts: GitHubChannelOpts) {
+    this.opts = opts;
+  }
 
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => {
-      const body = Buffer.concat(chunks);
+  async connect(): Promise<void> {
+    const { webhookSecret, port } = this.opts;
+
+    const app = express();
+
+    // Parse raw body for signature verification, then JSON
+    app.use('/webhooks/github', express.raw({ type: 'application/json' }));
+
+    app.get('/health', (_req, res) => {
+      res.json({ status: 'ok' });
+    });
+
+    app.post('/webhooks/github', (req, res) => {
+      const body = req.body as Buffer;
 
       // Verify signature
       const signature = req.headers['x-hub-signature-256'] as
         | string
         | undefined;
-      if (!verifySignature(secret, body, signature)) {
+      if (!verifySignature(webhookSecret, body, signature)) {
         logger.warn('GitHub webhook: invalid signature');
-        res.writeHead(401);
-        res.end('Invalid signature');
+        res.status(401).send('Invalid signature');
         return;
       }
 
@@ -208,8 +217,7 @@ export function startWebhookServer(opts: WebhookServerOpts): http.Server {
       const eventType = req.headers['x-github-event'] as string | undefined;
       const deliveryId = req.headers['x-github-delivery'] as string | undefined;
       if (!eventType) {
-        res.writeHead(400);
-        res.end('Missing X-GitHub-Event header');
+        res.status(400).send('Missing X-GitHub-Event header');
         return;
       }
 
@@ -217,8 +225,7 @@ export function startWebhookServer(opts: WebhookServerOpts): http.Server {
       try {
         payload = JSON.parse(body.toString('utf-8'));
       } catch {
-        res.writeHead(400);
-        res.end('Invalid JSON');
+        res.status(400).send('Invalid JSON');
         return;
       }
 
@@ -233,42 +240,81 @@ export function startWebhookServer(opts: WebhookServerOpts): http.Server {
       const message = formatEvent({ event: eventType, action, payload });
 
       if (message) {
-        // Ensure the chat exists in the chats table
-        storeChatMetadata(
-          targetJid,
+        const repoFullName = payload.repository?.full_name ?? 'unknown/unknown';
+        const chatJid = repoToJid(repoFullName);
+
+        // Store chat metadata for discovery
+        this.opts.onChatMetadata(
+          chatJid,
           new Date().toISOString(),
-          'GitHub',
+          repoFullName,
           'github',
           false,
         );
 
-        const msg: NewMessage = {
+        // Prepend trigger prefix so the message loop picks it up
+        const content = `@${ASSISTANT_NAME} ${message}`;
+
+        this.opts.onMessage(chatJid, {
           id: `github-${deliveryId || Date.now()}`,
-          chat_jid: targetJid,
+          chat_jid: chatJid,
           sender: 'github',
           sender_name: 'GitHub',
-          content: `${triggerPrefix} ${message}`,
+          content,
           timestamp: new Date().toISOString(),
           is_from_me: false,
           is_bot_message: false,
-        };
+        });
 
-        storeMessage(msg);
         logger.info(
-          { event: eventType, action },
+          { event: eventType, action, chatJid },
           'GitHub webhook stored as message',
         );
       }
 
-      // Always ACK to GitHub quickly
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ received: true }));
+      // Always ACK quickly
+      res.json({ received: true });
     });
-  });
 
-  server.listen(port, '0.0.0.0', () => {
-    logger.info({ port }, 'GitHub webhook server listening');
-  });
+    // Start listening
+    await new Promise<void>((resolve) => {
+      this.server = app.listen(port, '0.0.0.0', () => {
+        this.connected = true;
+        logger.info({ port }, 'GitHub webhook server listening');
+        console.log(
+          `\n  GitHub webhook server: http://0.0.0.0:${port}/webhooks/github\n`,
+        );
+        resolve();
+      });
+    });
+  }
 
-  return server;
+  async sendMessage(jid: string, text: string): Promise<void> {
+    // GitHub channel currently receives only — outbound replies go
+    // through whichever channel the user is chatting on (WhatsApp/Telegram).
+    // Future: post comments on issues/PRs via gh CLI.
+    logger.debug(
+      { jid, length: text.length },
+      'GitHubChannel.sendMessage called (no-op for now)',
+    );
+  }
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  ownsJid(jid: string): boolean {
+    return jid.startsWith('gh:');
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.server) {
+      await new Promise<void>((resolve) => {
+        this.server!.close(() => resolve());
+      });
+      this.server = null;
+      this.connected = false;
+      logger.info('GitHub webhook server stopped');
+    }
+  }
 }
