@@ -440,7 +440,6 @@ function recoverPendingMessages(): void {
   }
 }
 
-
 async function main(): Promise<void> {
   ensureContainerRuntimeRunning();
   cleanupOrphans();

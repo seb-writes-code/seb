@@ -194,7 +194,7 @@ function buildVolumeMounts(
     mounts.push({
       hostPath: gmailDir,
       containerPath: '/home/node/.gmail-mcp',
-      readonly: false,  // MCP may need to refresh tokens
+      readonly: false, // MCP may need to refresh tokens
     });
   }
 
