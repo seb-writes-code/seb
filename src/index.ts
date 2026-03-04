@@ -4,6 +4,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  GITHUB_WEBHOOK_PORT,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
@@ -39,6 +40,7 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
+import { readWebhookSecret, startWebhookServer } from './github-webhooks.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
@@ -484,6 +486,27 @@ async function main(): Promise<void> {
     });
     channels.push(telegram);
     await telegram.connect();
+  }
+
+  // GitHub webhook server (optional — only starts if secret + port are configured)
+  const webhookSecret = readWebhookSecret();
+  if (webhookSecret && GITHUB_WEBHOOK_PORT > 0) {
+    // Find the main group JID to route webhook messages to
+    const mainJid = Object.entries(registeredGroups).find(
+      ([, g]) => g.folder === MAIN_GROUP_FOLDER,
+    )?.[0];
+    if (mainJid) {
+      startWebhookServer({
+        secret: webhookSecret,
+        port: GITHUB_WEBHOOK_PORT,
+        targetJid: mainJid,
+        triggerPrefix: `@${ASSISTANT_NAME}`,
+      });
+    } else {
+      logger.warn(
+        'GitHub webhook server not started: no main group registered',
+      );
+    }
   }
 
   // Start subsystems (independently of connection handler)
