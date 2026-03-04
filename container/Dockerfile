@@ -35,9 +35,16 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y gh caddy default-mysql-server default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install tickrs (TickTick CLI) for task management
-RUN curl -fsSL https://github.com/SpaceK33z/tickrs/releases/download/v0.1.4/tickrs-x86_64-unknown-linux-musl.tar.gz \
-    | tar -xz -C /usr/local/bin tickrs
+# Install Go toolchain (for Hubris project development)
+ENV GOLANG_VERSION=1.23.6
+RUN curl -fsSL "https://go.dev/dl/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" | tar -C /usr/local -xzf -
+ENV PATH="/usr/local/go/bin:/home/node/go/bin:${PATH}"
+ENV GOPATH="/home/node/go"
+
+# Install Go dev tools
+RUN go install github.com/a-h/templ/cmd/templ@latest && \
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && \
+    go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 
 # Install Mailpit (email testing server)
 RUN curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | bash
@@ -68,8 +75,7 @@ RUN npm run build
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
 # Create entrypoint script
-# Container input (prompt, group info) is passed via stdin JSON.
-# Credentials are injected by the host's credential proxy — never passed here.
+# Secrets are passed via stdin JSON — temp file is deleted immediately after Node reads it
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
 RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
