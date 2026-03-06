@@ -62,6 +62,19 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
+/**
+ * Check whether any message in the batch contains a trigger word
+ * from an allowed sender (or from ourselves).
+ */
+function hasTriggerMessage(messages: NewMessage[], chatJid: string): boolean {
+  const allowlistCfg = loadSenderAllowlist();
+  return messages.some(
+    (m) =>
+      TRIGGER_PATTERN.test(m.content.trim()) &&
+      (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+  );
+}
+
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -163,13 +176,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
-    const allowlistCfg = loadSenderAllowlist();
-    const hasTrigger = missedMessages.some(
-      (m) =>
-        TRIGGER_PATTERN.test(m.content.trim()) &&
-        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
-    );
-    if (!hasTrigger) return true;
+    if (!hasTriggerMessage(missedMessages, chatJid)) return true;
   }
 
   const prompt = formatMessages(missedMessages);
@@ -394,14 +401,7 @@ async function startMessageLoop(): Promise<void> {
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
-            const allowlistCfg = loadSenderAllowlist();
-            const hasTrigger = groupMessages.some(
-              (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
-                (m.is_from_me ||
-                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
-            );
-            if (!hasTrigger) continue;
+            if (!hasTriggerMessage(groupMessages, chatJid)) continue;
           }
 
           // Pull all messages since lastAgentTimestamp so non-trigger
