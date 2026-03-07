@@ -49,28 +49,24 @@ When you learn something important:
 
 ## Message Formatting
 
-Format messages based on the channel you're responding to. Check your group folder name:
+NEVER use markdown. Only use WhatsApp/Telegram formatting:
+- *single asterisks* for bold (NEVER **double asterisks**)
+- _underscores_ for italic
+- • bullet points
+- ```triple backticks``` for code
 
-### Slack channels (folder starts with `slack_`)
+No ## headings. No [links](url). No **double stars**.
 
-Use Slack mrkdwn syntax. Run `/slack-formatting` for the full reference. Key rules:
-- `*bold*` (single asterisks)
-- `_italic_` (underscores)
-- `<https://url|link text>` for links (NOT `[text](url)`)
-- `•` bullets (no numbered lists)
-- `:emoji:` shortcodes
-- `>` for block quotes
-- No `##` headings — use `*Bold text*` instead
+## Obsidian Vault
 
-### WhatsApp/Telegram channels (folder starts with `whatsapp_` or `telegram_`)
+You have read-write access to the user's Obsidian vault at `/workspace/extra/obsidian-vault`. This is a shared knowledge base — the same vault the user sees in Obsidian on their Mac and iPhone (synced via Obsidian Sync).
 
-- `*bold*` (single asterisks, NEVER **double**)
-- `_italic_` (underscores)
-- `•` bullet points
-- ` ``` ` code blocks
+- Notes are plain markdown files (`.md`)
+- Folders organise topics
+- Use `[[wikilinks]]` to link between notes
+- Use `#tags` for categorisation
+- Frontmatter (YAML between `---` delimiters) is supported for metadata
+- The vault is live: changes you make appear in the user's Obsidian immediately
+- Notes can be created directly in `/workspace/extra/obsidian-vault/` or in subfolders as appropriate
 
-No `##` headings. No `[links](url)`. No `**double stars**`.
-
-### Discord channels (folder starts with `discord_`)
-
-Standard Markdown works: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
+When the user asks you to take notes, remember something long-term, or work on the knowledge base, use the vault.
