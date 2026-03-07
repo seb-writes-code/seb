@@ -198,6 +198,16 @@ function buildVolumeMounts(
     });
   }
 
+  // Obsidian vault (shared knowledge base across all groups)
+  const obsidianDir = path.join(homeDir, 'obsidian-vault');
+  if (fs.existsSync(obsidianDir)) {
+    mounts.push({
+      hostPath: obsidianDir,
+      containerPath: '/workspace/extra/obsidian-vault',
+      readonly: false,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
