@@ -299,10 +299,7 @@ class ProxmoxApi {
     while (Date.now() < deadline) {
       try {
         const res = JSON.parse(
-          this.curl(
-            'GET',
-            `/nodes/${this.node}/qemu/${vmId}/status/current`,
-          ),
+          this.curl('GET', `/nodes/${this.node}/qemu/${vmId}/status/current`),
         );
         if (res.data?.status === targetStatus) return;
         // Also check if lock is released (clone complete)
@@ -312,15 +309,15 @@ class ProxmoxApi {
       }
       execSync('sleep 2');
     }
-    throw new Error(`VM ${vmId} did not reach ${targetStatus} in ${timeoutSecs}s`);
+    throw new Error(
+      `VM ${vmId} did not reach ${targetStatus} in ${timeoutSecs}s`,
+    );
   }
 
   /** List all nanoclaw VMs (by name prefix). */
   listNanoclawVms(): Array<{ vmid: number; name: string; status: string }> {
     try {
-      const res = JSON.parse(
-        this.curl('GET', '/cluster/resources?type=vm'),
-      );
+      const res = JSON.parse(this.curl('GET', '/cluster/resources?type=vm'));
       return (res.data || []).filter(
         (r: { name: string }) => r.name && r.name.startsWith('nanoclaw-'),
       );
@@ -514,11 +511,7 @@ export class CloudRuntime implements Runtime {
     // SSH into the VM and run the entrypoint
     const sshProc = spawn(
       'ssh',
-      [
-        ...sshOpts,
-        `${sshUser}@${vmIp}`,
-        `${envScript}; /app/entrypoint.sh`,
-      ],
+      [...sshOpts, `${sshUser}@${vmIp}`, `${envScript}; /app/entrypoint.sh`],
       { stdio: ['pipe', 'pipe', 'pipe'] },
     );
 
