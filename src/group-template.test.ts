@@ -57,9 +57,7 @@ describe('copyGroupTemplate', () => {
     fs.mkdirSync(path.join(nonPrDir, 'logs'), { recursive: true });
     try {
       copyGroupTemplate(nonPrFolder);
-      expect(
-        fs.existsSync(path.join(nonPrDir, 'CLAUDE.md')),
-      ).toBe(false);
+      expect(fs.existsSync(path.join(nonPrDir, 'CLAUDE.md'))).toBe(false);
     } finally {
       fs.rmSync(nonPrDir, { recursive: true, force: true });
     }
