@@ -121,10 +121,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   try {
     copyGroupTemplate(group.folder);
   } catch (err) {
-    logger.warn(
-      { folder: group.folder, err },
-      'Failed to copy group template',
-    );
+    logger.warn({ folder: group.folder, err }, 'Failed to copy group template');
   }
 
   logger.info(
