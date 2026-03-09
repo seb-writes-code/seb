@@ -3,6 +3,7 @@
  * Returns cached runtime instances by type.
  */
 import { DockerRuntime } from './docker.js';
+import { QemuRuntime } from './qemu.js';
 import { Runtime } from './runtime.js';
 
 export type RuntimeType = 'docker' | 'qemu' | 'cloud';
@@ -22,7 +23,8 @@ export function getRuntime(type: RuntimeType = 'docker'): Runtime {
       runtime = new DockerRuntime();
       break;
     case 'qemu':
-      throw new Error('QEMU runtime not yet implemented');
+      runtime = new QemuRuntime();
+      break;
     case 'cloud':
       throw new Error('Cloud runtime not yet implemented');
     default:
