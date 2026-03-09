@@ -4,10 +4,14 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CREDENTIAL_PROXY_PORT,
+  HEARTBEAT_INTERVAL_MS,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -20,6 +24,7 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { PROXY_BIND_HOST } from './container-runtime.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -27,6 +32,7 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getRegisteredGroup,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -58,6 +64,19 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+
+/** Tracks currently-running agent tasks for /status and heartbeat. */
+export interface CurrentTask {
+  groupName: string;
+  startedAt: number;
+  lastMessageAt: number;
+}
+const currentTasks = new Map<string, CurrentTask>();
+
+/** @internal — exported for testing */
+export function _getCurrentTasks(): Map<string, CurrentTask> {
+  return currentTasks;
+}
 
 /**
  * Check whether any message in the batch contains a trigger word
@@ -146,6 +165,30 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
     }));
 }
 
+/** Format a duration in ms to a human-readable string like "2m 30s" */
+export function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * Build the /status response for a chat.
+ * Checks if an agent is currently processing for this group.
+ */
+export function buildStatusResponse(chatJid: string): string {
+  const task = currentTasks.get(chatJid);
+  if (!task) {
+    return `I'm idle — no active tasks right now.`;
+  }
+
+  const elapsed = formatElapsed(Date.now() - task.startedAt);
+  const lastMsg = formatElapsed(Date.now() - task.lastMessageAt);
+  return `Working on a request for *${task.groupName}*\n• Running for: ${elapsed}\n• Last update: ${lastMsg} ago`;
+}
+
 /** @internal - exported for testing */
 export function _setRegisteredGroups(
   groups: Record<string, RegisteredGroup>,
@@ -183,7 +226,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTriggerMessage(missedMessages, chatJid)) return true;
   }
 
-  const prompt = formatMessages(missedMessages);
+  const prompt = formatMessages(missedMessages, TIMEZONE);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -219,6 +262,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // Track this task for /status and heartbeat
+  const taskEntry: CurrentTask = {
+    groupName: group.name,
+    startedAt: Date.now(),
+    lastMessageAt: Date.now(),
+  };
+  currentTasks.set(chatJid, taskEntry);
+
+  // Heartbeat: if no output for HEARTBEAT_INTERVAL_MS, send a status update
+  const heartbeatTimer = setInterval(() => {
+    const silentMs = Date.now() - taskEntry.lastMessageAt;
+    if (silentMs >= HEARTBEAT_INTERVAL_MS) {
+      const elapsed = formatElapsed(Date.now() - taskEntry.startedAt);
+      const msg = `Still working on your request… (${elapsed})`;
+      channel.sendMessage(chatJid, msg).catch((err) => {
+        logger.warn({ chatJid, err }, 'Failed to send heartbeat message');
+      });
+      // Update lastMessageAt so we don't spam
+      taskEntry.lastMessageAt = Date.now();
+    }
+  }, 30_000);
+
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -231,6 +296,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
+        taskEntry.lastMessageAt = Date.now();
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -240,6 +306,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       hadError = true;
     }
   });
+
+  clearInterval(heartbeatTimer);
+  currentTasks.delete(chatJid);
 
   channel
     .setTyping?.(chatJid, false)
@@ -393,6 +462,18 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
+          // Handle /status command — respond from the main process, not the agent
+          const lastMsg = groupMessages[groupMessages.length - 1];
+          if (lastMsg && /^\/?(status)\s*$/i.test(lastMsg.content.trim())) {
+            const statusText = buildStatusResponse(chatJid);
+            channel
+              .sendMessage(chatJid, statusText)
+              .catch((err) =>
+                logger.warn({ chatJid, err }, 'Failed to send status response'),
+              );
+            continue; // Don't queue this to the agent
+          }
+
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
@@ -412,7 +493,7 @@ async function startMessageLoop(): Promise<void> {
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend);
+          const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
@@ -473,9 +554,16 @@ async function main(): Promise<void> {
 
   loadState();
 
+  // Start credential proxy (containers route API calls through this)
+  const proxyServer = await startCredentialProxy(
+    CREDENTIAL_PROXY_PORT,
+    PROXY_BIND_HOST,
+  );
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
