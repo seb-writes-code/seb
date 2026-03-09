@@ -31,6 +31,8 @@ export interface ContainerConfig {
   runtime?: 'docker' | 'qemu' | 'cloud';
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  /** Cloud provider override (e.g. 'proxmox', 'ec2'). Read from cloud-runtime.json by default. */
+  cloudProvider?: string;
 }
 
 export interface RegisteredGroup {
