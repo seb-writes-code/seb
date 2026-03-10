@@ -165,6 +165,21 @@ export function startIpcWatcher(deps: IpcDeps): void {
   logger.info('IPC watcher started (per-group namespaces)');
 }
 
+/**
+ * Convert a naive local timestamp string to UTC, interpreting it in the given timezone.
+ * Uses Intl.DateTimeFormat to determine the UTC offset — no extra dependencies needed.
+ */
+export function parseLocalTimestamp(
+  localDateStr: string,
+  timezone: string,
+): Date {
+  const naiveUtc = new Date(localDateStr + 'Z'); // treat as UTC first
+  const utcStr = naiveUtc.toLocaleString('en-US', { timeZone: 'UTC' });
+  const tzStr = naiveUtc.toLocaleString('en-US', { timeZone: timezone });
+  const offsetMs = new Date(utcStr).getTime() - new Date(tzStr).getTime();
+  return new Date(naiveUtc.getTime() + offsetMs);
+}
+
 export async function processTaskIpc(
   data: {
     type: string;
@@ -173,6 +188,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    timezone?: string;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -235,7 +251,7 @@ export async function processTaskIpc(
         if (scheduleType === 'cron') {
           try {
             const interval = CronExpressionParser.parse(data.schedule_value, {
-              tz: TIMEZONE,
+              tz: data.timezone || TIMEZONE,
             });
             nextRun = interval.next().toISOString();
           } catch {
@@ -256,7 +272,12 @@ export async function processTaskIpc(
           }
           nextRun = new Date(Date.now() + ms).toISOString();
         } else if (scheduleType === 'once') {
-          const date = new Date(data.schedule_value);
+          let date: Date;
+          if (data.timezone) {
+            date = parseLocalTimestamp(data.schedule_value, data.timezone);
+          } else {
+            date = new Date(data.schedule_value);
+          }
           if (isNaN(date.getTime())) {
             logger.warn(
               { scheduleValue: data.schedule_value },
@@ -285,6 +306,7 @@ export async function processTaskIpc(
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
+          timezone: data.timezone,
         });
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
@@ -385,7 +407,7 @@ export async function processTaskIpc(
             try {
               const interval = CronExpressionParser.parse(
                 updatedTask.schedule_value,
-                { tz: TIMEZONE },
+                { tz: task.timezone || TIMEZONE },
               );
               updates.next_run = interval.next().toISOString();
             } catch {

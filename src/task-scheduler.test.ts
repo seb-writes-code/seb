@@ -183,6 +183,70 @@ describe('task scheduler', () => {
     expect(offset).toBe(0);
   });
 
+  it('computeNextRun uses task.timezone for cron tasks (DST boundary)', () => {
+    // March 8, 2026 is when DST spring-forward happens in America/Los_Angeles
+    // (2:00 AM -> 3:00 AM). A "0 9 * * *" cron in LA should fire at 9am PT,
+    // which is 17:00 UTC during PST and 16:00 UTC during PDT.
+    const task = {
+      id: 'tz-test',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'cron' as const,
+      schedule_value: '0 9 * * *', // 9am daily
+      context_mode: 'isolated' as const,
+      next_run: null,
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+      timezone: 'America/Los_Angeles',
+    };
+
+    // Set time to March 9, 2026 at 00:00 UTC (after spring-forward)
+    vi.setSystemTime(new Date('2026-03-09T00:00:00.000Z'));
+    const nextRun = computeNextRun(task);
+    expect(nextRun).not.toBeNull();
+
+    // 9am PDT = UTC-7 = 16:00 UTC (after spring-forward)
+    const nextDate = new Date(nextRun!);
+    expect(nextDate.getUTCHours()).toBe(16);
+    expect(nextDate.getUTCMinutes()).toBe(0);
+
+    // Now check before spring-forward: March 7, 2026 (still PST)
+    vi.setSystemTime(new Date('2026-03-07T00:00:00.000Z'));
+    const nextRunPST = computeNextRun(task);
+    expect(nextRunPST).not.toBeNull();
+
+    // 9am PST = UTC-8 = 17:00 UTC (before spring-forward)
+    const nextDatePST = new Date(nextRunPST!);
+    expect(nextDatePST.getUTCHours()).toBe(17);
+    expect(nextDatePST.getUTCMinutes()).toBe(0);
+  });
+
+  it('computeNextRun falls back to global TIMEZONE when task has no timezone', () => {
+    const task = {
+      id: 'no-tz-test',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'cron' as const,
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated' as const,
+      next_run: null,
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+      // no timezone field — should fall back to global TIMEZONE
+    };
+
+    const nextRun = computeNextRun(task);
+    expect(nextRun).not.toBeNull();
+    // Just verify it returns a valid date — the exact hour depends on the test env's TIMEZONE
+    expect(new Date(nextRun!).getTime()).toBeGreaterThan(Date.now());
+  });
+
   it('computeNextRun falls back to now + interval when next_run is null', () => {
     const ms = 60000;
     const task = {

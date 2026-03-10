@@ -67,6 +67,7 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'running' | 'paused' | 'completed';
   created_at: string;
+  timezone?: string;
 }
 
 export interface TaskRunLog {
