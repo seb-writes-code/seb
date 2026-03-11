@@ -77,6 +77,48 @@ function extractIssueNumber(event: string, payload: any): number | null {
   }
 }
 
+/**
+ * Determine the GitHub group type from a webhook event.
+ * Returns 'pull_request', 'issue', or 'repo'.
+ */
+function extractGroupType(
+  event: string,
+  payload: any,
+): 'pull_request' | 'issue' | 'repo' {
+  switch (event) {
+    case 'pull_request':
+    case 'pull_request_review':
+    case 'pull_request_review_comment':
+      return 'pull_request';
+    case 'issues':
+      return 'issue';
+    case 'issue_comment':
+      // issue_comment fires for both issues and PRs; check for PR indicator
+      return payload.issue?.pull_request ? 'pull_request' : 'issue';
+    case 'check_suite':
+      return payload.check_suite?.pull_requests?.length
+        ? 'pull_request'
+        : 'repo';
+    default:
+      return 'repo';
+  }
+}
+
+/** Extract the title from a webhook payload (PR title or issue title). */
+function extractTitle(event: string, payload: any): string | undefined {
+  switch (event) {
+    case 'pull_request':
+    case 'pull_request_review':
+    case 'pull_request_review_comment':
+      return payload.pull_request?.title;
+    case 'issues':
+    case 'issue_comment':
+      return payload.issue?.title;
+    default:
+      return undefined;
+  }
+}
+
 /** Format a GitHub webhook event into a human-readable message */
 function formatEvent(event: string, payload: any): string | null {
   const repo = payload.repository?.full_name || 'unknown';
@@ -248,12 +290,17 @@ export class GitHubChannel implements Channel {
                 .replace(/\//g, '-')
                 .replace(/[^A-Za-z0-9-]/g, '')
                 .slice(0, 57)}`;
+          const groupType = extractGroupType(event, payload);
+          const title = extractTitle(event, payload);
+          const metadata: Record<string, string> = { type: groupType };
+          if (title) metadata.title = title;
           this.opts.registerGroup(chatJid, {
             name: chatName,
             folder,
             trigger: `@${ASSISTANT_NAME}`,
             added_at: timestamp,
             requiresTrigger: false,
+            metadata,
           });
           logger.info({ chatJid, folder }, 'Auto-registered GitHub group');
         }

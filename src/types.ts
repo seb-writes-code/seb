@@ -41,6 +41,7 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  metadata?: Record<string, string>; // Channel-specific context (e.g. GitHub type/title)
 }
 
 export interface NewMessage {

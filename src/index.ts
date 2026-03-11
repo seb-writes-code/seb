@@ -42,7 +42,7 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { copyGroupTemplate, resolveGroupFolderPath } from './group-folder.js';
+import { writeGroupTemplate, resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
@@ -120,11 +120,14 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
-  // Copy CLAUDE.md template if one matches this folder pattern
+  // Write CLAUDE.md template based on channel context (e.g. GitHub PR/issue)
   try {
-    copyGroupTemplate(group.folder);
+    writeGroupTemplate(group.folder, jid, group.metadata);
   } catch (err) {
-    logger.warn({ folder: group.folder, err }, 'Failed to copy group template');
+    logger.warn(
+      { folder: group.folder, err },
+      'Failed to write group template',
+    );
   }
 
   logger.info(
