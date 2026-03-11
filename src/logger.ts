@@ -14,3 +14,6 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   logger.error({ err: reason }, 'Unhandled rejection');
 });
+
+// DELIBERATE ERROR: testing GitHub webhook → auto-respond flow
+const x: number = 'this is not a number';
