@@ -313,6 +313,29 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // Live log streaming: open a write stream so stdout chunks are
+  // written to disk incrementally (tailable while the task runs).
+  const logTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const liveLogFile = path.join(logsDir, `container-${logTimestamp}.log`);
+  let logStream: fs.WriteStream | null = null;
+  const activeLink = path.join(logsDir, 'active.log');
+  try {
+    logStream = fs.createWriteStream(liveLogFile, { flags: 'a' });
+    // Create active.log symlink pointing to current log file
+    try {
+      if (fs.existsSync(activeLink)) fs.unlinkSync(activeLink);
+      fs.symlinkSync(liveLogFile, activeLink);
+    } catch {
+      /* non-fatal: symlink creation is best-effort */
+    }
+  } catch (err) {
+    logger.warn(
+      { group: group.name, error: err },
+      'Failed to open live log stream, falling back to in-memory logging',
+    );
+    logStream = null;
+  }
+
   const instance = await runtime.start(containerName, mounts, runtimeEnv, {
     image: CONTAINER_IMAGE,
     timeout: group.containerConfig?.timeout,
@@ -336,6 +359,15 @@ export async function runContainerAgent(
 
     instance.onStdout((data) => {
       const chunk = data.toString();
+
+      // Stream chunk to disk immediately for live tailing
+      if (logStream) {
+        try {
+          logStream.write(chunk);
+        } catch {
+          /* non-fatal: disk write failure doesn't break execution */
+        }
+      }
 
       // Always accumulate for logging
       if (!stdoutTruncated) {
@@ -450,6 +482,20 @@ export async function runContainerAgent(
     instance.onClose((code) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
+
+      // Close the live log stream and remove the active symlink
+      if (logStream) {
+        try {
+          logStream.end();
+        } catch {
+          /* non-fatal */
+        }
+      }
+      try {
+        if (fs.existsSync(activeLink)) fs.unlinkSync(activeLink);
+      } catch {
+        /* non-fatal */
+      }
 
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -642,6 +688,19 @@ export async function runContainerAgent(
 
     instance.onError((err) => {
       clearTimeout(timeout);
+      // Clean up live log stream on error
+      if (logStream) {
+        try {
+          logStream.end();
+        } catch {
+          /* non-fatal */
+        }
+      }
+      try {
+        if (fs.existsSync(activeLink)) fs.unlinkSync(activeLink);
+      } catch {
+        /* non-fatal */
+      }
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',

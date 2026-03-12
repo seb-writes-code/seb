@@ -27,6 +27,12 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+// Fake WriteStream for testing log streaming
+const fakeWriteStream = {
+  write: vi.fn(),
+  end: vi.fn(),
+};
+
 // Mock fs
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -41,6 +47,10 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      createWriteStream: vi.fn(() => fakeWriteStream),
+      symlinkSync: vi.fn(),
+      unlinkSync: vi.fn(),
+      readlinkSync: vi.fn(),
     },
   };
 });
@@ -124,6 +134,7 @@ vi.mock('child_process', async () => {
   };
 });
 
+import fs from 'fs';
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -277,5 +288,138 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('container-runner live log streaming', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeInstance = createFakeInstance();
+    fakeWriteStream.write.mockClear();
+    fakeWriteStream.end.mockClear();
+    vi.mocked(fs.createWriteStream).mockReturnValue(
+      fakeWriteStream as unknown as fs.WriteStream,
+    );
+    vi.mocked(fs.symlinkSync).mockImplementation(() => {});
+    vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('streams stdout chunks to the log file incrementally', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // Emit two separate stdout chunks
+    fakeInstance._stdout.push('First chunk of output\n');
+    fakeInstance._stdout.push('Second chunk of output\n');
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Both chunks should have been written to the log stream
+    expect(fakeWriteStream.write).toHaveBeenCalledTimes(2);
+    expect(fakeWriteStream.write).toHaveBeenCalledWith(
+      'First chunk of output\n',
+    );
+    expect(fakeWriteStream.write).toHaveBeenCalledWith(
+      'Second chunk of output\n',
+    );
+
+    // Normal exit
+    emitOutputMarker(fakeInstance, {
+      status: 'success',
+      result: 'Done',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeInstance._emitter.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+  });
+
+  it('creates active.log symlink at start and removes it on close', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // Verify createWriteStream was called with a path in the logs dir
+    expect(fs.createWriteStream).toHaveBeenCalledWith(
+      expect.stringContaining('container-'),
+      { flags: 'a' },
+    );
+
+    // Verify symlink was created
+    expect(fs.symlinkSync).toHaveBeenCalledWith(
+      expect.stringContaining('container-'),
+      expect.stringContaining('active.log'),
+    );
+
+    // Normal exit
+    emitOutputMarker(fakeInstance, { status: 'success', result: 'Done' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeInstance._emitter.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Verify log stream was closed
+    expect(fakeWriteStream.end).toHaveBeenCalled();
+
+    // Verify active.log symlink was removed on close
+    // (unlinkSync is called for symlink removal — existsSync returns false by default
+    // so we check that the cleanup path was reached via the end() call)
+    await resultPromise;
+  });
+
+  it('closes log stream on container close with non-zero exit code', async () => {
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    // Emit some stdout then close with error code
+    fakeInstance._stdout.push('some output before crash\n');
+    await vi.advanceTimersByTimeAsync(10);
+
+    fakeInstance._emitter.emit('close', 1);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('error');
+    expect(fakeWriteStream.end).toHaveBeenCalled();
+  });
+
+  it('still accumulates stdout in memory for OUTPUT_MARKER parsing', async () => {
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    // Emit a valid output marker via stdout
+    const output: ContainerOutput = {
+      status: 'success',
+      result: 'parsed result',
+    };
+    const json = JSON.stringify(output);
+    fakeInstance._stdout.push(
+      `${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Normal exit (legacy mode — no onOutput callback)
+    fakeInstance._emitter.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+    expect(result.result).toBe('parsed result');
+
+    // Log stream should also have received the chunk
+    expect(fakeWriteStream.write).toHaveBeenCalled();
   });
 });

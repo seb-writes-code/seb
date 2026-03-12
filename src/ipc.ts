@@ -6,7 +6,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder } from './group-folder.js';
+import { isValidGroupFolder, resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -464,7 +464,98 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'get_task_log':
+      handleGetTaskLog(data, sourceGroup, isMain);
+      break;
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
+}
+
+export interface TaskLogResult {
+  output: string;
+  isRunning: boolean;
+  logFile: string;
+}
+
+/**
+ * Read the last N lines of the active (or most recent) task log for a group.
+ * Writes the result to the group's IPC directory as `task_log_result.json`.
+ */
+function handleGetTaskLog(
+  data: { folder?: string; lines?: number },
+  sourceGroup: string,
+  isMain: boolean,
+): void {
+  const targetFolder = data.folder || sourceGroup;
+
+  // Authorization: non-main groups can only read their own logs
+  if (!isMain && targetFolder !== sourceGroup) {
+    logger.warn(
+      { sourceGroup, targetFolder },
+      'Unauthorized get_task_log attempt blocked',
+    );
+    return;
+  }
+
+  const lines = data.lines ?? 50;
+  let groupDir: string;
+  try {
+    groupDir = resolveGroupFolderPath(targetFolder);
+  } catch {
+    logger.warn({ targetFolder }, 'Invalid folder for get_task_log');
+    return;
+  }
+
+  const logsDir = path.join(groupDir, 'logs');
+  const activeLink = path.join(logsDir, 'active.log');
+  let isRunning = false;
+  let logFile = '';
+
+  // Check if there's an active (running) log
+  if (fs.existsSync(activeLink)) {
+    try {
+      logFile = fs.readlinkSync(activeLink);
+      isRunning = true;
+    } catch {
+      // Symlink may have been removed between check and read
+    }
+  }
+
+  // If no active log, find the most recent container-*.log
+  if (!logFile) {
+    try {
+      const logFiles = fs
+        .readdirSync(logsDir)
+        .filter((f) => f.startsWith('container-') && f.endsWith('.log'))
+        .sort()
+        .reverse();
+      if (logFiles.length > 0) {
+        logFile = path.join(logsDir, logFiles[0]);
+      }
+    } catch {
+      // logsDir may not exist yet
+    }
+  }
+
+  let output = '';
+  if (logFile && fs.existsSync(logFile)) {
+    try {
+      const content = fs.readFileSync(logFile, 'utf-8');
+      const allLines = content.split('\n');
+      output = allLines.slice(-lines).join('\n');
+    } catch (err) {
+      logger.warn({ logFile, error: err }, 'Failed to read task log');
+    }
+  }
+
+  // Write result to the group's IPC directory for the container to read
+  const ipcDir = path.join(DATA_DIR, 'ipc', sourceGroup);
+  fs.mkdirSync(ipcDir, { recursive: true });
+  const result: TaskLogResult = { output, isRunning, logFile };
+  fs.writeFileSync(
+    path.join(ipcDir, 'task_log_result.json'),
+    JSON.stringify(result, null, 2),
+  );
 }

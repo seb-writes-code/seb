@@ -43,6 +43,7 @@ Files you create are saved in `/workspace/group/`. Use this for notes, research,
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
 
 When you learn something important:
+
 - Create files for structured data (e.g., `customers.md`, `preferences.md`)
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
@@ -50,10 +51,11 @@ When you learn something important:
 ## Message Formatting
 
 NEVER use markdown. Only use WhatsApp/Telegram formatting:
-- *single asterisks* for bold (NEVER **double asterisks**)
+
+- _single asterisks_ for bold (NEVER **double asterisks**)
 - _underscores_ for italic
 - • bullet points
-- ```triple backticks``` for code
+- `triple backticks` for code
 
 No ## headings. No [links](url). No **double stars**.
 
@@ -70,3 +72,14 @@ You have read-write access to the user's Obsidian vault at `/workspace/extra/obs
 - Notes can be created directly in `/workspace/extra/obsidian-vault/` or in subfolders as appropriate
 
 When the user asks you to take notes, remember something long-term, or work on the knowledge base, use the vault.
+
+## Active Task Logs
+
+Background task logs are streamed to disk in real-time. While a task is running, its output is written incrementally to `{group_folder}/logs/active.log` (a symlink to the current run's log file). This means you can read recent output at any time — useful for answering questions like "what are you working on?" or diagnosing stuck tasks.
+
+To fetch recent log output programmatically, use the `get_task_log` IPC command:
+
+- Write `{ "type": "get_task_log", "folder": "<group-folder>", "lines": 50 }` to the IPC tasks directory
+- The result (last N lines, running status, and log file path) is written to `task_log_result.json` in your IPC directory
+
+On the host, you can also `tail -f {group_folder}/logs/active.log` to watch a running task in real-time.
