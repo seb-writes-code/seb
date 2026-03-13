@@ -1,7 +1,11 @@
+import fs from 'fs';
+
 import { Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { taskLogPath } from '../container-runner.js';
 import { readEnvFile } from '../env.js';
+import type { GroupQueue } from '../group-queue.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -25,6 +29,7 @@ export interface TelegramChannelOpts {
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup?: (jid: string, group: RegisteredGroup) => void;
+  groupQueue?: GroupQueue;
 }
 
 export class TelegramChannel implements Channel {
@@ -62,6 +67,83 @@ export class TelegramChannel implements Channel {
     // Command to check bot status
     this.bot.command('ping', (ctx) => {
       ctx.reply(`${ASSISTANT_NAME} is online.`);
+    });
+
+    // Command to tail live container output
+    this.bot.command('log', (ctx) => {
+      const topicId = (ctx.message as any)?.message_thread_id;
+      const chatJid = topicId
+        ? `tg:${ctx.chat.id}:${topicId}`
+        : `tg:${ctx.chat.id}`;
+
+      const logFile = taskLogPath(chatJid);
+      if (!fs.existsSync(logFile)) {
+        return ctx.reply('No task currently running for this group.');
+      }
+
+      // Parse optional line count argument (default 50, max 200)
+      const args = ctx.match?.toString().trim();
+      let lineCount = 50;
+      if (args) {
+        const parsed = parseInt(args, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          lineCount = Math.min(parsed, 200);
+        }
+      }
+
+      try {
+        const content = fs.readFileSync(logFile, 'utf8');
+        const lines = content.split('\n').slice(-lineCount).join('\n');
+        const trimmed = lines.slice(-3500); // Stay under Telegram's 4096 char limit with room for prefix
+        ctx.reply(
+          `📋 Live output (last ${lineCount} lines):\n\`\`\`\n${trimmed}\n\`\`\``,
+          {
+            parse_mode: 'Markdown',
+          },
+        );
+      } catch {
+        ctx.reply('Failed to read log file.');
+      }
+    });
+
+    // Command to check group task status
+    this.bot.command('status', (ctx) => {
+      const topicId = (ctx.message as any)?.message_thread_id;
+      const chatJid = topicId
+        ? `tg:${ctx.chat.id}:${topicId}`
+        : `tg:${ctx.chat.id}`;
+
+      if (!this.opts.groupQueue) {
+        return ctx.reply('Status tracking not available.');
+      }
+
+      const status = this.opts.groupQueue.getStatus(chatJid);
+
+      if (!status.active) {
+        const parts = ['✅ Idle'];
+        if (status.queueDepth > 0) {
+          parts.push(`${status.queueDepth} message(s) queued`);
+        }
+        return ctx.reply(parts.join('\n'));
+      }
+
+      const parts: string[] = [];
+      if (status.elapsedMs != null) {
+        const secs = Math.floor(status.elapsedMs / 1000);
+        const mins = Math.floor(secs / 60);
+        const remainingSecs = secs % 60;
+        const elapsed =
+          mins > 0 ? `${mins}m ${remainingSecs}s` : `${remainingSecs}s`;
+        if (status.runningTaskId) {
+          parts.push(`⚙️ Scheduled task running — ${elapsed} elapsed`);
+        } else {
+          parts.push(`⚙️ Task running — ${elapsed} elapsed`);
+        }
+      }
+      if (status.queueDepth > 0) {
+        parts.push(`${status.queueDepth} message(s) queued`);
+      }
+      ctx.reply(parts.join('\n'));
     });
 
     this.bot.on('message:text', async (ctx) => {
@@ -313,5 +395,6 @@ registerChannel('telegram', (opts: ChannelOpts) => {
   return new TelegramChannel(token, {
     ...opts,
     registerGroup: opts.registerGroup,
+    groupQueue: opts.groupQueue,
   });
 });

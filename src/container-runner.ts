@@ -31,6 +31,17 @@ import { RegisteredGroup } from './types.js';
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
+const TASK_LOGS_DIR = path.join(process.cwd(), 'logs');
+
+/**
+ * Get the live task log file path for a group.
+ * The file exists only while a container is running for that group.
+ */
+export function taskLogPath(groupJid: string): string {
+  const safe = groupJid.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(TASK_LOGS_DIR, `task-${safe}.log`);
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -326,6 +337,17 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
+    // Create live task log file for /log command visibility
+    const logPath = taskLogPath(input.chatJid);
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.writeFileSync(logPath, ''); // Create/truncate
+
+    const cleanupLogFile = () => {
+      try {
+        fs.unlinkSync(logPath);
+      } catch {}
+    };
+
     instance.writeInput(JSON.stringify(input));
     instance.closeInput();
 
@@ -351,6 +373,11 @@ export async function runContainerAgent(
           stdout += chunk;
         }
       }
+
+      // Append to live task log file for /log visibility
+      try {
+        fs.appendFileSync(logPath, chunk);
+      } catch {}
 
       // Stream-parse for output markers
       if (onOutput) {
@@ -449,6 +476,7 @@ export async function runContainerAgent(
 
     instance.onClose((code) => {
       clearTimeout(timeout);
+      cleanupLogFile();
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -642,6 +670,7 @@ export async function runContainerAgent(
 
     instance.onError((err) => {
       clearTimeout(timeout);
+      cleanupLogFile();
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',

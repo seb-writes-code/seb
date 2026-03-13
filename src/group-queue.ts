@@ -20,12 +20,20 @@ interface GroupState {
   idleWaiting: boolean;
   isTaskContainer: boolean;
   runningTaskId: string | null;
+  taskStartTime: number | null;
   pendingMessages: boolean;
   pendingTasks: QueuedTask[];
   process: RuntimeInstance | null;
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+}
+
+export interface GroupStatus {
+  runningTaskId: string | null;
+  elapsedMs: number | null;
+  queueDepth: number;
+  active: boolean;
 }
 
 export class GroupQueue {
@@ -44,6 +52,7 @@ export class GroupQueue {
         idleWaiting: false,
         isTaskContainer: false,
         runningTaskId: null,
+        taskStartTime: null,
         pendingMessages: false,
         pendingTasks: [],
         process: null,
@@ -58,6 +67,24 @@ export class GroupQueue {
 
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
+  }
+
+  getStatus(groupJid: string): GroupStatus {
+    const state = this.groups.get(groupJid);
+    if (!state) {
+      return {
+        runningTaskId: null,
+        elapsedMs: null,
+        queueDepth: 0,
+        active: false,
+      };
+    }
+    return {
+      runningTaskId: state.runningTaskId,
+      elapsedMs: state.taskStartTime ? Date.now() - state.taskStartTime : null,
+      queueDepth: state.pendingTasks.length + (state.pendingMessages ? 1 : 0),
+      active: state.active,
+    };
   }
 
   enqueueMessageCheck(groupJid: string): void {
@@ -209,6 +236,7 @@ export class GroupQueue {
     state.active = true;
     state.idleWaiting = false;
     state.isTaskContainer = false;
+    state.taskStartTime = Date.now();
     state.pendingMessages = false;
     this.activeCount++;
 
@@ -231,6 +259,7 @@ export class GroupQueue {
       this.scheduleRetry(groupJid, state);
     } finally {
       state.active = false;
+      state.taskStartTime = null;
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
@@ -245,6 +274,7 @@ export class GroupQueue {
     state.idleWaiting = false;
     state.isTaskContainer = true;
     state.runningTaskId = task.id;
+    state.taskStartTime = Date.now();
     this.activeCount++;
 
     logger.debug(
@@ -260,6 +290,7 @@ export class GroupQueue {
       state.active = false;
       state.isTaskContainer = false;
       state.runningTaskId = null;
+      state.taskStartTime = null;
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;

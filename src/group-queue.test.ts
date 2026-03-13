@@ -438,6 +438,69 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
   });
 
+  // --- getStatus ---
+
+  it('returns idle status for unknown group', () => {
+    const status = queue.getStatus('unknown@g.us');
+    expect(status.active).toBe(false);
+    expect(status.runningTaskId).toBeNull();
+    expect(status.elapsedMs).toBeNull();
+    expect(status.queueDepth).toBe(0);
+  });
+
+  it('returns active status with elapsed time when processing messages', async () => {
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Advance time to simulate elapsed
+    vi.advanceTimersByTime(5000);
+
+    const status = queue.getStatus('group1@g.us');
+    expect(status.active).toBe(true);
+    expect(status.runningTaskId).toBeNull();
+    expect(status.elapsedMs).toBeGreaterThanOrEqual(5000);
+    expect(status.queueDepth).toBe(0);
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  it('returns running task ID and queue depth in status', async () => {
+    let resolveTask: () => void;
+
+    const taskFn = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveTask = resolve;
+      });
+    });
+
+    queue.enqueueTask('group1@g.us', 'task-42', taskFn);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const status = queue.getStatus('group1@g.us');
+    expect(status.active).toBe(true);
+    expect(status.runningTaskId).toBe('task-42');
+    expect(status.elapsedMs).toBeGreaterThanOrEqual(0);
+
+    resolveTask!();
+    await vi.advanceTimersByTimeAsync(10);
+
+    const idleStatus = queue.getStatus('group1@g.us');
+    expect(idleStatus.active).toBe(false);
+    expect(idleStatus.runningTaskId).toBeNull();
+    expect(idleStatus.elapsedMs).toBeNull();
+  });
+
   it('preempts when idle arrives with pending tasks', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;

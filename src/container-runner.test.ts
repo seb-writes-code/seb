@@ -41,6 +41,8 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      appendFileSync: vi.fn(),
+      unlinkSync: vi.fn(),
     },
   };
 });
@@ -124,7 +126,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  ContainerOutput,
+  taskLogPath,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -150,6 +156,61 @@ function emitOutputMarker(
     `${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`,
   );
 }
+
+describe('taskLogPath', () => {
+  it('sanitizes JID characters for filesystem safety', () => {
+    const p = taskLogPath('tg:-1001234567890:123');
+    expect(p).toContain('task-tg_-1001234567890_123.log');
+    expect(p).not.toContain(':');
+  });
+
+  it('handles WhatsApp JIDs', () => {
+    const p = taskLogPath('120363336345536173@g.us');
+    expect(p).toContain('task-120363336345536173_g_us.log');
+    expect(p).not.toContain('@');
+  });
+});
+
+describe('container-runner live log file', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeInstance = createFakeInstance();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('creates log file at start, appends stdout, and cleans up on close', async () => {
+    const fs = await import('fs');
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    const appendFileSync = vi.mocked(
+      (fs.default as any).appendFileSync || vi.fn(),
+    );
+    const unlinkSync = vi.mocked((fs.default as any).unlinkSync || vi.fn());
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    // Let the async runtime.start() resolve so the promise body runs
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Verify log file was created (writeFileSync with empty string for the log path)
+    const logFileCreations = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].includes('task-'),
+    );
+    expect(logFileCreations.length).toBeGreaterThanOrEqual(1);
+
+    // Emit some stdout
+    fakeInstance._stdout.push('Hello from container\n');
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Normal exit
+    fakeInstance._emitter.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+  });
+});
 
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {

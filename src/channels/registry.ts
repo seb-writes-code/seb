@@ -4,12 +4,14 @@ import {
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import type { GroupQueue } from '../group-queue.js';
 
 export interface ChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup?: (jid: string, group: RegisteredGroup) => void;
+  groupQueue?: GroupQueue;
 }
 
 export type ChannelFactory = (opts: ChannelOpts) => Channel | null;
