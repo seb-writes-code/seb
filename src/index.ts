@@ -237,6 +237,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = formatOutbound(raw);
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
+        // Clear typing indicator before sending — Telegram auto-clears on
+        // message send, but we also need to stop our repeating interval.
+        channel
+          .setTyping?.(chatJid, false)
+          ?.catch((err) =>
+            logger.warn({ chatJid, err }, 'Failed to clear typing indicator'),
+          );
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
