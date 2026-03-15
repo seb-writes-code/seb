@@ -90,6 +90,23 @@ You have a GitHub account: **seb-writes-code** (seb@chrisraible.com).
 
 Git config (name/email) is pre-configured in the container. You can then use `gh` and `git` for repos, PRs, issues, etc.
 
+## SSH Access
+
+You can SSH into remote servers (VMs, Hetzner, etc.) by loading your SSH key from 1Password. Run `/load-ssh-key` before your first SSH command in a session. The key is stored as `agent-ssh-key` in the "Seb" 1Password vault.
+
+The key is ephemeral — it only exists for the duration of the container session and is never written to persistent storage.
+
+## Hetzner Cloud (hcloud)
+
+The `hcloud` CLI is installed in the container. To use it, retrieve the Hetzner API token from 1Password and export it:
+
+```bash
+export HCLOUD_TOKEN="<token from 1Password>"
+hcloud server list
+```
+
+You can provision, manage, and destroy Hetzner Cloud servers autonomously.
+
 ---
 
 ## Admin Context

@@ -54,6 +54,13 @@ RUN go install github.com/a-h/templ/cmd/templ@latest && \
 # Install Mailpit (email testing server)
 RUN curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | bash
 
+# Install openssh-client for SSH access to VMs
+RUN apt-get update && apt-get install -y openssh-client && rm -rf /var/lib/apt/lists/*
+
+# Install hcloud CLI (Hetzner Cloud)
+RUN curl -fsSL https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-$(dpkg --print-architecture).tar.gz \
+    | tar -xz -C /usr/local/bin hcloud
+
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
