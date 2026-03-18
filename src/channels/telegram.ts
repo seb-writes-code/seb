@@ -33,6 +33,10 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private typingState = new Map<
+    string,
+    { timer: ReturnType<typeof setInterval> | null; lastSent: number }
+  >();
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -278,6 +282,7 @@ export class TelegramChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    this.clearAllTypingTimers();
     if (this.bot) {
       this.bot.stop();
       this.bot = null;
@@ -286,19 +291,70 @@ export class TelegramChannel implements Channel {
   }
 
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
-    if (!this.bot || !isTyping) return;
-    try {
-      const match = jid.match(/^tg:(-?\d+)(?::(\d+))?$/);
-      if (!match) return;
-      const [, chatId, topicId] = match;
-      await this.bot.api.sendChatAction(
-        chatId,
-        'typing',
-        topicId ? { message_thread_id: parseInt(topicId, 10) } : undefined,
-      );
-    } catch (err) {
-      logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
+    if (!this.bot) return;
+
+    // Stop typing: clear interval and remove state
+    const existing = this.typingState.get(jid);
+    if (existing?.timer) {
+      clearInterval(existing.timer);
     }
+
+    if (!isTyping) {
+      this.typingState.delete(jid);
+      return;
+    }
+
+    const match = jid.match(/^tg:(-?\d+)(?::(\d+))?$/);
+    if (!match) return;
+    const [, chatId, topicId] = match;
+    const threadOpts = topicId
+      ? { message_thread_id: parseInt(topicId, 10) }
+      : undefined;
+
+    const state = {
+      timer: null as ReturnType<typeof setInterval> | null,
+      lastSent: 0,
+    };
+    this.typingState.set(jid, state);
+
+    const sendAction = async () => {
+      const now = Date.now();
+      // Per-chat rate limit: skip if sent within last 3 seconds
+      if (now - state.lastSent < 3000) return;
+      try {
+        await this.bot!.api.sendChatAction(chatId, 'typing', threadOpts);
+        state.lastSent = Date.now();
+      } catch (err: any) {
+        if (err?.error_code === 429 || err?.statusCode === 429) {
+          logger.warn(
+            { jid, err },
+            'Telegram typing rate limited, backing off',
+          );
+          // Stop refreshing for this chat to back off
+          if (state.timer) {
+            clearInterval(state.timer);
+            state.timer = null;
+          }
+        } else {
+          logger.debug(
+            { jid, err },
+            'Failed to send Telegram typing indicator',
+          );
+        }
+      }
+    };
+
+    // Send immediately, then refresh every 4.5s
+    await sendAction();
+    state.timer = setInterval(sendAction, 4500);
+  }
+
+  /** Clean up all typing timers (e.g. on disconnect) */
+  private clearAllTypingTimers(): void {
+    for (const [, state] of this.typingState) {
+      if (state.timer) clearInterval(state.timer);
+    }
+    this.typingState.clear();
   }
 }
 

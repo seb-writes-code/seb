@@ -822,14 +822,89 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('does nothing when isTyping is false', async () => {
+    it('clears interval when isTyping is false', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
+      // Start typing (sets interval)
+      await channel.setTyping('tg:100200300', true);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(1);
+
+      // Stop typing (clears interval, no new API call)
+      currentBot().api.sendChatAction.mockClear();
       await channel.setTyping('tg:100200300', false);
 
       expect(currentBot().api.sendChatAction).not.toHaveBeenCalled();
+    });
+
+    it('repeats typing action every 4.5 seconds', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.setTyping('tg:100200300', true);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(1);
+
+      // Advance 4.5 seconds — should fire again
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(2);
+
+      // Advance another 4.5 seconds
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(3);
+
+      // Stop typing — no more calls
+      await channel.setTyping('tg:100200300', false);
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(3);
+
+      vi.useRealTimers();
+    });
+
+    it('skips refresh when last sent within 3 seconds (rate limit guard)', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Start typing — sends immediately
+      await channel.setTyping('tg:100200300', true);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(1);
+
+      // Advance only 2 seconds (within 3s guard) — should skip
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(1);
+
+      await channel.setTyping('tg:100200300', false);
+      vi.useRealTimers();
+    });
+
+    it('handles 429 rate limit error gracefully and stops refreshing', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.setTyping('tg:100200300', true);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(1);
+
+      // Next call returns 429
+      currentBot().api.sendChatAction.mockRejectedValueOnce({
+        error_code: 429,
+        description: 'Too Many Requests',
+      });
+
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(2);
+
+      // After 429, interval should be cleared — no more calls
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(2);
+
+      await channel.setTyping('tg:100200300', false);
+      vi.useRealTimers();
     });
 
     it('does nothing when bot is not initialized', async () => {
@@ -842,18 +917,45 @@ describe('TelegramChannel', () => {
       // No error, no API call
     });
 
-    it('handles typing indicator failure gracefully', async () => {
+    it('handles generic typing indicator failure gracefully', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
       currentBot().api.sendChatAction.mockRejectedValueOnce(
-        new Error('Rate limited'),
+        new Error('Network error'),
       );
 
       await expect(
         channel.setTyping('tg:100200300', true),
       ).resolves.toBeUndefined();
+    });
+
+    it('manages per-chat independent typing state', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Start typing in two different chats
+      await channel.setTyping('tg:111', true);
+      await channel.setTyping('tg:222', true);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(2);
+
+      // Stop typing in chat 111 only
+      await channel.setTyping('tg:111', false);
+
+      // Advance — only chat 222 should refresh
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledTimes(3);
+      expect(currentBot().api.sendChatAction).toHaveBeenLastCalledWith(
+        '222',
+        'typing',
+        undefined,
+      );
+
+      await channel.setTyping('tg:222', false);
+      vi.useRealTimers();
     });
   });
 
