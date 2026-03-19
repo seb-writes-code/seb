@@ -3,6 +3,7 @@ import { Bot } from 'grammy';
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { TypingIndicatorManager } from '../typing-indicator.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -33,6 +34,7 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private typingManager = new TypingIndicatorManager();
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -286,19 +288,25 @@ export class TelegramChannel implements Channel {
   }
 
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
-    if (!this.bot || !isTyping) return;
-    try {
-      const match = jid.match(/^tg:(-?\d+)(?::(\d+))?$/);
-      if (!match) return;
-      const [, chatId, topicId] = match;
-      await this.bot.api.sendChatAction(
+    if (!this.bot) return;
+
+    if (!isTyping) {
+      this.typingManager.stop(jid);
+      return;
+    }
+
+    const match = jid.match(/^tg:(-?\d+)(?::(\d+))?$/);
+    if (!match) return;
+    const [, chatId, topicId] = match;
+    const bot = this.bot;
+
+    await this.typingManager.start(jid, async () => {
+      await bot.api.sendChatAction(
         chatId,
         'typing',
         topicId ? { message_thread_id: parseInt(topicId, 10) } : undefined,
       );
-    } catch (err) {
-      logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
-    }
+    });
   }
 }
 
