@@ -1097,4 +1097,134 @@ describe('GitHubChannel sender allowlist', () => {
 
     expect(opts.onMessage).toHaveBeenCalled();
   });
+
+  // --- Eyes reaction ---
+
+  describe('eyes reaction on mention', () => {
+    let botChannel: GitHubChannel;
+    let botPort: number;
+    let botOpts: ChannelOpts;
+    const reactionCalls: { url: string; opts: any }[] = [];
+    let origFetch: typeof globalThis.fetch;
+
+    beforeEach(async () => {
+      botOpts = createTestOpts();
+      botChannel = new GitHubChannel(
+        SECRET,
+        0,
+        'test-github-token',
+        [],
+        botOpts,
+        'seb-writes-code',
+      );
+      await botChannel.connect();
+      const addr = (botChannel as any).server.address();
+      botPort = addr.port;
+
+      // Intercept only GitHub API reaction calls; pass everything else through
+      reactionCalls.length = 0;
+      origFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any, opts: any) => {
+        if (typeof url === 'string' && url.includes('/reactions')) {
+          reactionCalls.push({ url, opts });
+          return new Response('{}', { status: 201 });
+        }
+        return origFetch(url, opts);
+      }) as typeof globalThis.fetch;
+    });
+
+    afterEach(async () => {
+      globalThis.fetch = origFetch;
+      await botChannel.disconnect();
+    });
+
+    it('reacts with eyes when bot is mentioned in issue comment', async () => {
+      await sendWebhook(botPort, {
+        event: 'issue_comment',
+        secret: SECRET,
+        payload: {
+          action: 'created',
+          issue: {
+            number: 5,
+            title: 'Test issue',
+            pull_request: { url: 'https://api.github.com/repos/cmraible/seb/pulls/5' },
+          },
+          comment: {
+            id: 12345,
+            body: 'Hey @seb-writes-code can you look at this?',
+            user: { login: 'cmraible' },
+            html_url: 'https://github.com/cmraible/seb/issues/5#comment-12345',
+          },
+          repository: { full_name: 'cmraible/seb' },
+          sender: { login: 'cmraible' },
+        },
+      });
+
+      // Wait for async reaction call
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(reactionCalls).toHaveLength(1);
+      expect(reactionCalls[0].url).toBe(
+        'https://api.github.com/repos/cmraible/seb/issues/comments/12345/reactions',
+      );
+      expect(JSON.parse(reactionCalls[0].opts.body).content).toBe('eyes');
+    });
+
+    it('reacts with eyes when bot is mentioned in PR review comment', async () => {
+      await sendWebhook(botPort, {
+        event: 'pull_request_review_comment',
+        secret: SECRET,
+        payload: {
+          action: 'created',
+          pull_request: {
+            number: 10,
+            title: 'Test PR',
+            user: { login: 'cmraible' },
+          },
+          comment: {
+            id: 67890,
+            body: '@seb-writes-code fix this',
+            user: { login: 'cmraible' },
+            html_url: 'https://github.com/cmraible/seb/pull/10#comment-67890',
+          },
+          repository: { full_name: 'cmraible/seb' },
+          sender: { login: 'cmraible' },
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(reactionCalls).toHaveLength(1);
+      expect(reactionCalls[0].url).toBe(
+        'https://api.github.com/repos/cmraible/seb/pulls/comments/67890/reactions',
+      );
+    });
+
+    it('does not react when bot is not mentioned', async () => {
+      await sendWebhook(botPort, {
+        event: 'issue_comment',
+        secret: SECRET,
+        payload: {
+          action: 'created',
+          issue: {
+            number: 5,
+            title: 'Test issue',
+            pull_request: { url: 'https://api.github.com/repos/cmraible/seb/pulls/5' },
+          },
+          comment: {
+            id: 99999,
+            body: 'Just a regular comment, no mention',
+            user: { login: 'cmraible' },
+            html_url: 'https://github.com/cmraible/seb/issues/5#comment-99999',
+          },
+          repository: { full_name: 'cmraible/seb' },
+          sender: { login: 'cmraible' },
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(reactionCalls).toHaveLength(0);
+    });
+  });
 });

@@ -332,6 +332,24 @@ export class GitHubChannel implements Channel {
         }
       }
 
+      // React with 👀 when the bot is mentioned in a comment
+      if (this.botUsername) {
+        const commentBody =
+          payload.comment?.body || payload.review?.body || '';
+        if (
+          commentBody
+            .toLowerCase()
+            .includes(`@${this.botUsername.toLowerCase()}`)
+        ) {
+          const commentId = payload.comment?.id;
+          if (commentId) {
+            const endpoint =
+              event === 'pull_request_review_comment' ? 'pulls' : 'issues';
+            this.addReaction(repo, commentId, 'eyes', endpoint);
+          }
+        }
+      }
+
       // Format the event into a human-readable message
       const text = formatEvent(event, payload);
       if (!text) return;
@@ -416,6 +434,42 @@ export class GitHubChannel implements Channel {
       );
     } catch (err) {
       logger.error({ jid, issueNumber, err }, 'Failed to post GitHub comment');
+    }
+  }
+
+  /** React with an emoji to a GitHub comment */
+  private async addReaction(
+    repo: string,
+    commentId: number,
+    reaction: string,
+    endpoint: 'issues' | 'pulls',
+  ): Promise<void> {
+    if (!this.token) return;
+    const path =
+      endpoint === 'pulls'
+        ? `repos/${repo}/pulls/comments/${commentId}/reactions`
+        : `repos/${repo}/issues/comments/${commentId}/reactions`;
+    const url = `https://api.github.com/${path}`;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ content: reaction }),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        logger.debug(
+          { repo, commentId, status: res.status, body },
+          'Failed to add GitHub reaction',
+        );
+      }
+    } catch (err) {
+      logger.debug({ repo, commentId, err }, 'Failed to add GitHub reaction');
     }
   }
 
