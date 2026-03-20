@@ -16,7 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -27,7 +27,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
-  secrets?: Record<string, string>;
+  ackContext?: Record<string, string>;
 }
 
 interface ContainerOutput {
@@ -182,30 +182,6 @@ function createPreCompactHook(assistantName?: string): HookCallback {
     }
 
     return {};
-  };
-}
-
-// Secrets to strip from Bash tool subprocess environments.
-// These are needed by claude-code for API auth but should never
-// be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'OP_SERVICE_ACCOUNT_TOKEN', 'OPENROUTER_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
-
-function createSanitizeBashHook(): HookCallback {
-  return async (input, _toolUseId, _context) => {
-    const preInput = input as PreToolUseHookInput;
-    const command = (preInput.tool_input as { command?: string })?.command;
-    if (!command) return {};
-
-    const unsetPrefix = `unset ${SECRET_ENV_VARS.join(' ')} 2>/dev/null; `;
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        updatedInput: {
-          ...(preInput.tool_input as Record<string, unknown>),
-          command: unsetPrefix + command,
-        },
-      },
-    };
   };
 }
 
@@ -458,7 +434,6 @@ async function runQuery(
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
       },
     }
   })) {
@@ -503,7 +478,6 @@ async function main(): Promise<void> {
   try {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
-    // Delete the temp file the entrypoint wrote — it contains secrets
     try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
     log(`Received input for group: ${containerInput.groupFolder}`);
   } catch (err) {
@@ -515,12 +489,26 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Build SDK env: merge secrets into process.env for the SDK only.
-  // Secrets never touch process.env itself, so Bash subprocesses can't see them.
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
-  for (const [key, value] of Object.entries(containerInput.secrets || {})) {
-    sdkEnv[key] = value;
+  // Send ack to host so the channel can react with 👀 (confirms agent is alive)
+  if (containerInput.ackContext && Object.keys(containerInput.ackContext).length > 0) {
+    const ackDir = '/workspace/ipc/messages';
+    fs.mkdirSync(ackDir, { recursive: true });
+    const ackFile = path.join(ackDir, `${Date.now()}-ack.json`);
+    const ackData = {
+      type: 'ack',
+      chatJid: containerInput.chatJid,
+      context: containerInput.ackContext,
+      timestamp: new Date().toISOString(),
+    };
+    const tmpFile = `${ackFile}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(ackData));
+    fs.renameSync(tmpFile, ackFile);
+    log('Sent ack to host');
   }
+
+  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
+  // No real secrets exist in the container environment.
+  const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
   // OpenRouter: if an API key is provided, route through OpenRouter
   if (sdkEnv.OPENROUTER_API_KEY) {
