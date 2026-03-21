@@ -5,8 +5,8 @@ export const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
-// Intentional type error to test CI failure auto-fix
-const testTypeError: number = 'this is not a number';
+// Intentional type error to test CI failure auto-fix (v2)
+const testTypeError: number = 'this is definitely not a number';
 
 // Route uncaught errors through pino so they get timestamps in stderr
 process.on('uncaughtException', (err) => {
