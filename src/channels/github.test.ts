@@ -918,7 +918,7 @@ describe('GitHubChannel bot username bypass', () => {
     );
   });
 
-  it('registers non-bot PR with requiresTrigger true', async () => {
+  it('registers non-bot PR with requiresTrigger false (auto-review)', async () => {
     opts = createTestOpts();
     channel = new GitHubChannel(
       SECRET,
@@ -952,7 +952,7 @@ describe('GitHubChannel bot username bypass', () => {
     expect(opts.registerGroup).toHaveBeenCalledWith(
       'gh:cmraible/seb#11',
       expect.objectContaining({
-        requiresTrigger: true,
+        requiresTrigger: false,
       }),
     );
   });
@@ -1000,7 +1000,7 @@ describe('GitHubChannel bot username bypass', () => {
     );
   });
 
-  it('requires trigger when botUsername is not set', async () => {
+  it('skips trigger for PRs even when botUsername is not set', async () => {
     opts = createTestOpts();
     channel = new GitHubChannel(SECRET, 'test-token', [], opts);
     await channel.connect();
@@ -1028,7 +1028,7 @@ describe('GitHubChannel bot username bypass', () => {
     expect(opts.registerGroup).toHaveBeenCalledWith(
       'gh:cmraible/seb#12',
       expect.objectContaining({
-        requiresTrigger: true,
+        requiresTrigger: false,
       }),
     );
   });
