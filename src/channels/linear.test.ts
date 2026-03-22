@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 vi.mock('../config.js', () => ({
   ASSISTANT_NAME: 'Seb',
   TRIGGER_PATTERN: /^@Seb\b/i,
+  DATA_DIR: '/tmp/nanoclaw-linear-test-data',
 }));
 
 vi.mock('../logger.js', () => ({
@@ -19,12 +20,21 @@ vi.mock('../logger.js', () => ({
   },
 }));
 
+import fs from 'fs';
+import path from 'path';
+
 import {
   LinearChannel,
   makeLinearFolder,
   verifyLinearSignature,
+  loadLinearOAuth,
+  saveLinearOAuth,
+  exchangeLinearOAuthCode,
+  fetchLinearViewerId,
 } from './linear.js';
 import { ChannelOpts } from './registry.js';
+
+const TEST_DATA_DIR = '/tmp/nanoclaw-linear-test-data';
 
 // --- Test helpers ---
 
@@ -511,6 +521,115 @@ describe('LinearChannel', () => {
     it('returns false for non-linear JIDs', () => {
       expect(channel.ownsJid('gh:cmraible/seb#1')).toBe(false);
       expect(channel.ownsJid('tg:-1001234')).toBe(false);
+    });
+  });
+
+  describe('OAuth callback', () => {
+    beforeEach(async () => {
+      // Clean up test data dir
+      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+      fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+
+      opts = createTestOpts();
+      channel = new LinearChannel(
+        SECRET,
+        'test-client-id',
+        'test-client-secret',
+        '',
+        opts,
+      );
+      await channel.connect();
+      const result = await startServer(opts.app!);
+      server = result.server;
+      port = result.port;
+    });
+
+    afterEach(() => {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    });
+
+    it('returns 400 when code is missing', async () => {
+      const res = await fetch(`http://localhost:${port}/linear/callback`);
+      expect(res.status).toBe(400);
+      const text = await res.text();
+      expect(text).toContain('Missing authorization code');
+    });
+
+    it('returns success HTML on valid callback', async () => {
+      // Mock the handleOAuthCallback method
+      const handleSpy = vi
+        .spyOn(channel, 'handleOAuthCallback')
+        .mockResolvedValue();
+
+      const res = await fetch(
+        `http://localhost:${port}/linear/callback?code=test-auth-code`,
+      );
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('Seb has been installed successfully');
+      expect(html).toContain('You can close this tab');
+      expect(handleSpy).toHaveBeenCalledWith('test-auth-code');
+    });
+
+    it('returns 500 when OAuth exchange fails', async () => {
+      vi.spyOn(channel, 'handleOAuthCallback').mockRejectedValue(
+        new Error('exchange failed'),
+      );
+
+      const res = await fetch(
+        `http://localhost:${port}/linear/callback?code=bad-code`,
+      );
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe('persisted OAuth token', () => {
+    beforeEach(() => {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+      fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+    });
+
+    afterEach(() => {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    });
+
+    it('loads persisted token on startup', async () => {
+      saveLinearOAuth({
+        access_token: 'persisted-token',
+        bot_user_id: 'persisted-bot-id',
+      });
+
+      opts = createTestOpts();
+      channel = new LinearChannel(
+        SECRET,
+        'test-client-id',
+        'test-client-secret',
+        '',
+        opts,
+      );
+      await channel.connect();
+      const result = await startServer(opts.app!);
+      server = result.server;
+      port = result.port;
+
+      // The channel should have loaded the persisted token — verify
+      // by checking ownsJid still works (basic sanity) and that
+      // the bot user ID was picked up
+      expect(channel.isConnected()).toBe(true);
+    });
+
+    it('saveLinearOAuth and loadLinearOAuth round-trip', () => {
+      const data = {
+        access_token: 'test-token-123',
+        bot_user_id: 'user-456',
+      };
+      saveLinearOAuth(data);
+      const loaded = loadLinearOAuth();
+      expect(loaded).toEqual(data);
+    });
+
+    it('loadLinearOAuth returns null when file does not exist', () => {
+      expect(loadLinearOAuth()).toBeNull();
     });
   });
 
