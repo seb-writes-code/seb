@@ -427,9 +427,21 @@ export class LinearChannel implements Channel {
     payload: any,
     deliveryId: string,
   ): Promise<void> {
-    const data = payload.data;
+    let data = payload.data;
     const actor = payload.actor;
     const timestamp = payload.createdAt || new Date().toISOString();
+
+    // Handle AgentSessionEvent payload structure (different from Issue/Comment)
+    if (type === 'AgentSessionEvent' && !data) {
+      logger.info(
+        { type, payloadKeys: Object.keys(payload) },
+        'AgentSessionEvent payload structure',
+      );
+      const session = payload.agentSession || payload;
+      if (session) {
+        data = { agentSession: session };
+      }
+    }
 
     if (!data) {
       logger.warn({ type, action }, 'Linear webhook missing data field');
