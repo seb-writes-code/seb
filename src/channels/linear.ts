@@ -1,11 +1,21 @@
 import crypto from 'crypto';
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
 
-import { ASSISTANT_NAME } from '../config.js';
+import { ASSISTANT_NAME, DATA_DIR } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import { Channel } from '../types.js';
+
+/** Path to the persisted OAuth token file */
+const LINEAR_OAUTH_FILE = path.join(DATA_DIR, 'linear-oauth.json');
+
+interface LinearOAuthData {
+  access_token: string;
+  bot_user_id: string;
+}
 
 /** Linear webhook event types we handle */
 const SUPPORTED_TYPES = new Set(['Issue', 'Comment']);
@@ -131,6 +141,80 @@ function formatEvent(
     default:
       return null;
   }
+}
+
+/**
+ * Load persisted OAuth token from disk.
+ */
+export function loadLinearOAuth(): LinearOAuthData | null {
+  try {
+    if (!fs.existsSync(LINEAR_OAUTH_FILE)) return null;
+    const raw = fs.readFileSync(LINEAR_OAUTH_FILE, 'utf-8');
+    const data = JSON.parse(raw) as LinearOAuthData;
+    if (data.access_token) return data;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist OAuth token to disk.
+ */
+export function saveLinearOAuth(data: LinearOAuthData): void {
+  fs.mkdirSync(path.dirname(LINEAR_OAUTH_FILE), { recursive: true });
+  fs.writeFileSync(LINEAR_OAUTH_FILE, JSON.stringify(data, null, 2) + '\n');
+}
+
+/**
+ * Exchange an authorization code for an OAuth access token.
+ */
+export async function exchangeLinearOAuthCode(
+  code: string,
+  clientId: string,
+  clientSecret: string,
+  redirectUri: string,
+): Promise<{ access_token: string }> {
+  const res = await fetch('https://api.linear.app/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+    }).toString(),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(
+      `Linear OAuth code exchange failed (${res.status}): ${body}`,
+    );
+  }
+  return (await res.json()) as { access_token: string };
+}
+
+/**
+ * Query the Linear API for the authenticated user's ID.
+ */
+export async function fetchLinearViewerId(token: string): Promise<string> {
+  const res = await fetch('https://api.linear.app/graphql', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ query: '{ viewer { id } }' }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Linear viewer query failed (${res.status}): ${body}`);
+  }
+  const result = (await res.json()) as any;
+  const id = result.data?.viewer?.id;
+  if (!id) throw new Error('Linear viewer query returned no ID');
+  return id;
 }
 
 /**
@@ -267,15 +351,51 @@ export class LinearChannel implements Channel {
       );
     });
 
-    // Pre-fetch token on startup if credentials are configured
-    if (this.clientId && this.clientSecret) {
+    // OAuth callback handler for agent installation
+    app.get('/linear/callback', (req, res) => {
+      const code = req.query.code as string | undefined;
+      if (!code) {
+        res.status(400).send('Missing authorization code');
+        return;
+      }
+
+      this.handleOAuthCallback(code)
+        .then(() => {
+          res
+            .status(200)
+            .send(
+              '<!DOCTYPE html><html><body>' +
+                '<h1>Seb has been installed successfully!</h1>' +
+                '<p>You can close this tab.</p>' +
+                '</body></html>',
+            );
+        })
+        .catch((err) => {
+          logger.error({ err }, 'Linear OAuth callback failed');
+          res.status(500).send('OAuth callback failed: ' + String(err));
+        });
+    });
+
+    // On startup, load persisted OAuth token if it exists
+    const persisted = loadLinearOAuth();
+    if (persisted) {
+      this.accessToken = persisted.access_token;
+      this.botUserId = persisted.bot_user_id;
+      logger.info(
+        { botUserId: this.botUserId },
+        'Linear: loaded persisted OAuth token',
+      );
+    } else if (this.clientId && this.clientSecret) {
+      // Fall back to client credentials if no persisted OAuth token
       this.getAccessToken().catch(() => {
         /* logged inside getAccessToken */
       });
     }
 
     this.connected = true;
-    logger.info('Linear webhook routes mounted on /linear/webhook');
+    logger.info(
+      'Linear routes mounted on /linear/webhook and /linear/callback',
+    );
   }
 
   private async processWebhook(
@@ -404,6 +524,35 @@ export class LinearChannel implements Channel {
     logger.info(
       { type, action, chatJid, deliveryId },
       'Linear webhook event processed',
+    );
+  }
+
+  /**
+   * Handle the OAuth callback: exchange code for token, fetch viewer ID,
+   * persist both, and update the in-memory state.
+   */
+  async handleOAuthCallback(code: string): Promise<void> {
+    const redirectUri = 'https://webhooks.seb-writes-code.dev/linear/callback';
+
+    const { access_token } = await exchangeLinearOAuthCode(
+      code,
+      this.clientId,
+      this.clientSecret,
+      redirectUri,
+    );
+
+    const botUserId = await fetchLinearViewerId(access_token);
+
+    // Persist to disk
+    saveLinearOAuth({ access_token, bot_user_id: botUserId });
+
+    // Update in-memory state
+    this.accessToken = access_token;
+    this.botUserId = botUserId;
+
+    logger.info(
+      { botUserId },
+      'Linear OAuth callback: token exchanged and persisted',
     );
   }
 
