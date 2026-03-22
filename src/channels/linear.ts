@@ -190,6 +190,22 @@ function formatEvent(
       const identifier = issue.identifier || issue.id;
       const title = issue.title || '';
       const url = issue.url || '';
+
+      if (action === 'prompted') {
+        // User replied within the agent session
+        const userMessage =
+          data.agentActivity?.body || data.promptContext || '';
+        if (!userMessage) return null;
+        return {
+          text: `[Linear] Reply in agent session for ${identifier} by ${actorName}:\n${userMessage}`,
+          metadata: {
+            linear_agent_session_id: session.id || '',
+            linear_issue_identifier: identifier,
+          },
+        };
+      }
+
+      // action === 'created' — initial delegation
       const promptContext = data.promptContext || '';
       const parts = [
         `[Linear] Issue ${identifier} "${title}" delegated to ${ASSISTANT_NAME}`,
