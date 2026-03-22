@@ -41,7 +41,7 @@ describe('stopCommand', () => {
   it('returns docker stop command with container name', () => {
     const runtime = new DockerRuntime();
     expect(runtime.stopCommand('nanoclaw-test-123')).toBe(
-      'docker stop nanoclaw-test-123',
+      'docker stop -t 1 nanoclaw-test-123',
     );
   });
 });
@@ -96,12 +96,12 @@ describe('cleanupOrphans', () => {
     expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      'docker stop nanoclaw-group1-111',
+      'docker stop -t 1 nanoclaw-group1-111',
       { stdio: 'pipe' },
     );
     expect(mockExecSync).toHaveBeenNthCalledWith(
       3,
-      'docker stop nanoclaw-group2-222',
+      'docker stop -t 1 nanoclaw-group2-222',
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(
