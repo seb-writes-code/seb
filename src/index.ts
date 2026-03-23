@@ -6,6 +6,16 @@ import path from 'path';
 
 const startTime = Date.now();
 
+// Cache git version at startup to avoid running shell commands on every /health request
+let cachedVersion = '';
+try {
+  cachedVersion = execSync('git log -1 --format="%h"', {
+    encoding: 'utf-8',
+  }).trim();
+} catch {
+  // not in a git repo
+}
+
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
@@ -605,28 +615,18 @@ async function main(): Promise<void> {
   // Health endpoint — used by deploy smoke tests and monitoring
   webhookApp.get('/health', (_req, res) => {
     let dbOk = false;
+    let groupCount = 0;
     try {
-      const groupCount = Object.keys(registeredGroups).length;
+      groupCount = Object.keys(registeredGroups).length;
       dbOk = groupCount >= 0; // DB is accessible if this doesn't throw
     } catch {
       // DB not accessible
     }
 
-    let version = '';
-    try {
-      version = execSync('git log -1 --format="%h"', {
-        encoding: 'utf-8',
-      }).trim();
-    } catch {
-      // not in a git repo
-    }
-
-    const groupCount = Object.keys(registeredGroups).length;
-
     res.json({
       status: dbOk ? 'ok' : 'degraded',
       uptime: Math.floor((Date.now() - startTime) / 1000),
-      version,
+      version: cachedVersion,
       channels: channels.map((c) => c.name),
       groups: groupCount,
       dbOk,
