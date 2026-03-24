@@ -306,14 +306,21 @@ Read the issue details and any comments. The issue context from Linear is includ
 ### Step 2: Find the right repository
 Use the \`gh\` CLI to determine which repo to work in. Common repos:
 - \`cmraible/seb\` — The main NanoClaw/Seb project
+- \`cmraible/sandctl\` — The sandctl CLI project
+- \`cmraible/rebased\` — The Rebased project
 
 If unsure, check the issue description for repo references, or look at related issues.
 
 ### Step 3: Clone and branch
+
+**IMPORTANT**: You are authenticated as \`seb-writes-code\`, which is a fork-based workflow. Always clone from the target repo (e.g. \`cmraible/seb\`), NOT from \`seb-writes-code\`. Then push to the fork and open the PR against the target repo.
+
 \`\`\`bash
 cd /tmp
-gh repo clone <owner>/<repo> work-repo
+gh repo clone <owner>/<repo> work-repo -- --depth=50
 cd work-repo
+git remote set-url origin https://x-access-token:$(gh auth token)@github.com/seb-writes-code/<repo>.git
+git remote add upstream https://github.com/<owner>/<repo>.git
 git checkout -b <branch-name>
 \`\`\`
 
@@ -326,11 +333,15 @@ Send an \`[action:Cloning repository] owner/repo\` activity.
 - Send \`[thought]\` activities as you reason through the implementation
 
 ### Step 5: Push and create PR
+
+**CRITICAL**: Always specify \`--repo <owner>/<repo>\` and \`--head seb-writes-code:<branch>\` to ensure the PR targets the correct repo.
+
 \`\`\`bash
 git add <files>
 git commit -m "description of changes"
 git push -u origin <branch-name>
-gh pr create --title "..." --body "..."
+gh pr create --repo <owner>/<repo> --head seb-writes-code:<branch-name> --title "..." --body "..." --reviewer cmraible
+gh pr merge <number> --repo <owner>/<repo> --auto --squash
 \`\`\`
 
 Send an \`[action:Created PR] #123\` activity.
@@ -348,6 +359,7 @@ Send an \`[action:Created PR] #123\` activity.
 ## Important Notes
 - You have \`LINEAR_ACCESS_TOKEN\` in your environment for API calls
 - You have GitHub access via \`gh\` CLI (authenticated as seb-writes-code)
+- **CRITICAL: PRs must target \`cmraible/*\` repos (e.g. \`cmraible/seb\`, \`cmraible/sandctl\`). NEVER open PRs against \`qwibitai/nanoclaw\` or any other upstream.** The \`cmraible/seb\` repo is a fork of \`qwibitai/nanoclaw\`, so \`gh pr create\` without \`--repo\` will incorrectly target \`qwibitai/nanoclaw\`. You MUST always pass \`--repo cmraible/<repo>\`.
 - Always create a new branch for your work, never push to main
 - If the issue requires changes you can't make (infrastructure, secrets, etc.), explain what's needed in your final response
 `;
