@@ -207,3 +207,72 @@ jobs:
             echo "MAIN_JID: $MAIN_JID"
             echo "CHAT_ID: $CHAT_ID"
           fi
+
+      - name: Trigger post-deploy verification
+        if: success() && github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          cd "$PROJECT_ROOT"
+
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          COMMIT_MSG=$(git log -1 --format="%s" "${{ github.sha }}")
+          PR_NUMBER=$(echo "$COMMIT_MSG" | grep -oP '#\K\d+' | head -1 || true)
+
+          # Gather PR details if available
+          PR_TITLE=""
+          PR_BODY=""
+          CHANGED_FILES=""
+          if [ -n "$PR_NUMBER" ]; then
+            PR_TITLE=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json title -q '.title' 2>/dev/null || true)
+            PR_BODY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json body -q '.body' 2>/dev/null || true)
+            CHANGED_FILES=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json files -q '.files[].path' 2>/dev/null || true)
+          fi
+
+          # Read webhook port and secret from .env
+          WEBHOOK_PORT=$(grep '^WEBHOOK_PORT=' .env | cut -d= -f2- || echo "3000")
+          WEBHOOK_PORT=${WEBHOOK_PORT:-3000}
+          WEBHOOK_SECRET=$(grep '^GITHUB_WEBHOOK_SECRET=' .env | cut -d= -f2- || true)
+
+          if [ -z "$WEBHOOK_SECRET" ]; then
+            echo "GITHUB_WEBHOOK_SECRET not set, skipping verification"
+            exit 0
+          fi
+
+          # Build JSON payload
+          PAYLOAD=$(jq -n \
+            --arg sha "${{ github.sha }}" \
+            --arg msg "$COMMIT_MSG" \
+            --arg pr "$PR_NUMBER" \
+            --arg title "$PR_TITLE" \
+            --arg body "$PR_BODY" \
+            --arg files "$CHANGED_FILES" \
+            --arg repo "${{ github.repository }}" \
+            '{
+              commit_sha: $sha,
+              commit_message: $msg,
+              pr_number: (if $pr == "" then null else ($pr | tonumber) end),
+              pr_title: $title,
+              pr_body: $body,
+              changed_files: $files,
+              repo: $repo
+            }')
+
+          # Compute HMAC-SHA256 signature
+          SIGNATURE="sha256=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')"
+
+          # Trigger verification task
+          HTTP_CODE=$(curl -sf -o /tmp/verify-response.json -w "%{http_code}" \
+            -X POST "http://localhost:${WEBHOOK_PORT}/deploy/verify" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: $SIGNATURE" \
+            -d "$PAYLOAD" 2>/dev/null || echo "000")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            TASK_ID=$(jq -r '.task_id' /tmp/verify-response.json 2>/dev/null || echo "unknown")
+            echo "Post-deploy verification triggered (task: $TASK_ID)"
+          else
+            echo "::warning::Post-deploy verification request failed (HTTP $HTTP_CODE)"
+            cat /tmp/verify-response.json 2>/dev/null || true
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

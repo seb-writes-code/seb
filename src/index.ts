@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import http from 'http';
@@ -43,6 +44,7 @@ import {
 } from './container-runner.js';
 import { PROXY_BIND_HOST } from './container-runtime.js';
 import {
+  createTask,
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
@@ -703,6 +705,128 @@ async function main(): Promise<void> {
       dbOk,
     });
   });
+
+  // Post-deploy verification endpoint — called by GitHub Actions CD workflow
+  // Authenticated via GITHUB_WEBHOOK_SECRET HMAC signature
+  webhookApp.post(
+    '/deploy/verify',
+    express.json(),
+    (req: express.Request, res: express.Response) => {
+      const envVars = readEnvFile(['GITHUB_WEBHOOK_SECRET']);
+      const secret =
+        process.env.GITHUB_WEBHOOK_SECRET ||
+        envVars.GITHUB_WEBHOOK_SECRET ||
+        '';
+
+      if (!secret) {
+        logger.warn('deploy/verify: GITHUB_WEBHOOK_SECRET not configured');
+        res.status(500).json({ error: 'Webhook secret not configured' });
+        return;
+      }
+
+      // Verify HMAC-SHA256 signature
+      const signature = req.headers['x-hub-signature-256'] as string;
+      if (!signature) {
+        res.status(401).json({ error: 'Missing signature' });
+        return;
+      }
+      const payload = JSON.stringify(req.body);
+      const expected =
+        'sha256=' +
+        crypto.createHmac('sha256', secret).update(payload).digest('hex');
+      try {
+        if (
+          !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
+        ) {
+          res.status(401).json({ error: 'Invalid signature' });
+          return;
+        }
+      } catch {
+        res.status(401).json({ error: 'Invalid signature' });
+        return;
+      }
+
+      const {
+        commit_sha,
+        commit_message,
+        pr_number,
+        pr_title,
+        pr_body,
+        changed_files,
+        repo,
+      } = req.body;
+
+      if (!commit_sha) {
+        res.status(400).json({ error: 'Missing commit_sha' });
+        return;
+      }
+
+      // Find main group to schedule the verification task against
+      const mainEntry = Object.entries(registeredGroups).find(
+        ([, g]) => g.isMain,
+      );
+      if (!mainEntry) {
+        logger.warn('deploy/verify: no main group registered');
+        res.status(500).json({ error: 'No main group registered' });
+        return;
+      }
+      const [mainJid, mainGroup] = mainEntry;
+
+      // Build the verification prompt
+      const shortSha = commit_sha.slice(0, 7);
+      const prInfo = pr_number
+        ? `PR #${pr_number}: ${pr_title || 'N/A'}\n${pr_body || ''}`
+        : '';
+      const filesInfo = changed_files ? `Changed files:\n${changed_files}` : '';
+
+      const prompt = [
+        `You are the post-deploy verification agent. A new commit (${shortSha}) was just deployed to production.`,
+        `Repo: ${repo || 'cmraible/seb'}`,
+        `Commit: ${commit_sha}`,
+        `Commit message: ${commit_message || 'N/A'}`,
+        prInfo ? `\n${prInfo}` : '',
+        filesInfo ? `\n${filesInfo}` : '',
+        '',
+        'Your job:',
+        '1. Use agent-browser to open the production health endpoint and verify the service is healthy',
+        '2. Based on the PR description and changed files, determine what behavior to verify',
+        '3. Run any applicable checks (hit endpoints, verify UI changes, check logs)',
+        '4. Post your verification result as a comment on the PR (if a PR number is provided) using `gh pr comment`',
+        '',
+        `If verification FAILS, send a message to the group explaining what failed.`,
+        `If verification PASSES, send a brief confirmation message to the group.`,
+        '',
+        pr_number
+          ? `To comment on the PR: gh pr comment ${pr_number} --repo ${repo || 'cmraible/seb'} --body "your comment"`
+          : 'No PR number provided — just report results to the group.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      // Schedule one-shot task to run immediately
+      const taskId = `verify-${shortSha}-${Date.now()}`;
+      const now = new Date().toISOString();
+      createTask({
+        id: taskId,
+        group_folder: mainGroup.folder,
+        chat_jid: mainJid,
+        prompt,
+        schedule_type: 'once',
+        schedule_value: now,
+        context_mode: 'isolated',
+        next_run: now,
+        status: 'active',
+        created_at: now,
+      });
+
+      logger.info(
+        { taskId, commit_sha: shortSha, pr_number },
+        'Post-deploy verification task scheduled',
+      );
+
+      res.json({ ok: true, task_id: taskId });
+    },
+  );
 
   // Channel callbacks (shared by all channels)
   const channelOpts = {
