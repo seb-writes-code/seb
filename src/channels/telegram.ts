@@ -3,7 +3,7 @@ import path from 'path';
 
 import { Api, Bot, InlineKeyboard } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, TRIGGER_PATTERN, WEBAPP_URL } from '../config.js';
 import { GROUPS_DIR } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { formatNextRun, formatSchedule } from '../format-schedule.js';
@@ -223,6 +223,39 @@ export class TelegramChannel implements Channel {
 
       ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
     });
+
+    // Remote control commands — forward through onMessage so the handler
+    // in index.ts can intercept them (main-group only guard is there).
+    const forwardCommand = (commandText: string) => async (ctx: any) => {
+      const topicId = (ctx.message as any)?.message_thread_id;
+      const chatJid = topicId
+        ? `tg:${ctx.chat.id}:${topicId}`
+        : `tg:${ctx.chat.id}`;
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      const sender = ctx.from?.id?.toString() || '';
+      const chatName =
+        ctx.chat.type === 'private'
+          ? senderName
+          : (ctx.chat as any).title || chatJid;
+      this.opts.onChatMetadata(chatJid, timestamp, chatName);
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender,
+        sender_name: senderName,
+        content: commandText,
+        timestamp,
+        is_from_me: false,
+      });
+    };
+    this.bot.command('rc', forwardCommand('/rc'));
+    this.bot.command('rcend', forwardCommand('/rcend'));
+    this.bot.command('rc_end', forwardCommand('/rc-end'));
 
     // Command to list and manage scheduled tasks
     this.bot.command('tasks', (ctx) => {
@@ -494,6 +527,22 @@ export class TelegramChannel implements Channel {
     this.bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
     });
+
+    // Set menu button to open the Web App if WEBAPP_URL is configured
+    if (WEBAPP_URL) {
+      try {
+        await this.bot.api.setChatMenuButton({
+          menu_button: {
+            type: 'web_app',
+            text: 'Manage',
+            web_app: { url: `${WEBAPP_URL}/app` },
+          },
+        });
+        logger.info({ url: WEBAPP_URL }, 'Telegram menu button set to Web App');
+      } catch (err) {
+        logger.warn({ err }, 'Failed to set Telegram menu button');
+      }
+    }
 
     // Start polling — returns a Promise that resolves when started
     return new Promise<void>((resolve) => {

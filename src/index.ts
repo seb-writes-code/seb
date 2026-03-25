@@ -26,6 +26,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeLogsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import { PROXY_BIND_HOST } from './container-runtime.js';
@@ -37,6 +38,7 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getRecentTaskRunLogs,
   getRegisteredGroup,
   getRouterState,
   initDatabase,
@@ -67,6 +69,7 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { startWebApp } from './webapp.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -264,6 +267,30 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     chatJid,
     ackContext,
     async (result) => {
+      // Streaming activity updates — only forward to Linear channels (agent sessions)
+      // Other channels (Telegram, WhatsApp, etc.) don't use these activity prefixes
+      if (result.activity && chatJid.startsWith('linear:')) {
+        const { type, content, action } = result.activity;
+        let activityText: string;
+        if (type === 'action' && action) {
+          activityText = `[action:${action}] ${content}`;
+        } else {
+          activityText = `[thought] ${content}`;
+        }
+        try {
+          await channel.sendMessage(chatJid, activityText);
+        } catch (err) {
+          logger.warn(
+            { group: group.name, activityType: type, err },
+            'Failed to send activity update',
+          );
+        }
+        return;
+      } else if (result.activity) {
+        // Non-Linear channels: silently skip activity updates
+        return;
+      }
+
       // Streaming output callback — called for each agent result
       if (result.result) {
         const raw =
@@ -279,6 +306,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
         resetIdleTimer();
+        // Notify queue this container is idle — allows preemption if other groups are waiting
+        queue.notifyIdle(chatJid);
       }
 
       if (result.status === 'error') {
@@ -350,6 +379,15 @@ async function runAgent(
     isMain,
     availableGroups,
     new Set(Object.keys(registeredGroups)),
+  );
+
+  // Update recent logs snapshot for container to read
+  const taskRunLogs = getRecentTaskRunLogs(isMain ? null : group.folder, 20);
+  writeLogsSnapshot(
+    group.folder,
+    isMain,
+    taskRunLogs,
+    Object.values(registeredGroups).map((g) => g.folder),
   );
 
   // Wrap onOutput to track session ID from streamed results
@@ -544,9 +582,11 @@ async function main(): Promise<void> {
   let webhookServer: http.Server | null = null;
 
   // Graceful shutdown handlers
+  let webAppServer: import('http').Server | null = null;
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    webAppServer?.close();
     if (webhookServer) webhookServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
@@ -719,6 +759,19 @@ async function main(): Promise<void> {
   if (TELEGRAM_BOT_POOL.length > 0) {
     await initBotPool(TELEGRAM_BOT_POOL);
   }
+
+  // Start Telegram Web App server
+  const { WEBAPP_PORT } = await import('./config.js');
+  const { deleteRegisteredGroup } = await import('./db.js');
+  webAppServer = await startWebApp(WEBAPP_PORT, {
+    registeredGroups: () => registeredGroups,
+    registerGroup,
+    deleteGroup: (jid: string) => {
+      delete registeredGroups[jid];
+      deleteRegisteredGroup(jid);
+      logger.info({ jid }, 'Group unregistered via webapp');
+    },
+  });
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
