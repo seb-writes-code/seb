@@ -97,6 +97,39 @@ export class TelegramChannel implements Channel {
       this.opts.requestRestart();
     });
 
+    // Remote control commands — forward through onMessage so the handler
+    // in index.ts can intercept them (main-group only guard is there).
+    const forwardCommand = (commandText: string) => async (ctx: any) => {
+      const topicId = (ctx.message as any)?.message_thread_id;
+      const chatJid = topicId
+        ? `tg:${ctx.chat.id}:${topicId}`
+        : `tg:${ctx.chat.id}`;
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      const sender = ctx.from?.id?.toString() || '';
+      const chatName =
+        ctx.chat.type === 'private'
+          ? senderName
+          : (ctx.chat as any).title || chatJid;
+      this.opts.onChatMetadata(chatJid, timestamp, chatName);
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender,
+        sender_name: senderName,
+        content: commandText,
+        timestamp,
+        is_from_me: false,
+      });
+    };
+    this.bot.command('rc', forwardCommand('/rc'));
+    this.bot.command('rcend', forwardCommand('/rcend'));
+    this.bot.command('rc_end', forwardCommand('/rc-end'));
+
     // Command to list and manage scheduled tasks
     this.bot.command('tasks', (ctx) => {
       if (!this.opts.getActiveTasks) {
