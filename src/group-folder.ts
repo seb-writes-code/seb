@@ -182,6 +182,16 @@ When you receive a "PR opened" or "PR updated" event, automatically review the c
 - \`gh pr review ${ctx.number} --repo ${ctx.repo} --approve --body "..."\` — approve PR
 - \`gh pr review ${ctx.number} --repo ${ctx.repo} --request-changes --body "..."\` — request changes
 
+## Installing Dependencies Before Committing
+Before making any commits (e.g. CI fixes), install project dependencies so git hooks (husky/lint-staged/prettier) are set up:
+\`\`\`bash
+if [ -f bun.lockb ] || [ -f bun.lock ]; then bun install
+elif [ -f package-lock.json ]; then npm install
+elif [ -f yarn.lock ]; then yarn install
+elif [ -f pnpm-lock.yaml ]; then pnpm install
+fi
+\`\`\`
+
 ## Repo Location
 The repo may be cloned locally. Check \`/workspace/extra/\` for clones.
 `;
@@ -204,6 +214,7 @@ You are activated by GitHub webhook events on this issue. You have access to the
 ## Behavior
 - When @seb-writes-code or @seb-assistant is mentioned, respond to the comment
 - If assigned to this issue, proactively investigate and propose a fix via a new PR
+- Before making any commits, install project dependencies so git hooks run: detect lockfile (\`package-lock.json\` → npm, \`bun.lockb\`/\`bun.lock\` → bun, \`yarn.lock\` → yarn, \`pnpm-lock.yaml\` → pnpm) and run the appropriate install command
 - Always include a link to the issue in your messages
 
 ## Useful Commands
@@ -224,6 +235,16 @@ You are Seb, monitoring the main branch of a GitHub repository.
 
 ## Your Role
 You are activated by check_suite events on the main branch. If CI fails on main, investigate and raise a PR to fix it.
+
+## Installing Dependencies Before Committing
+Before making any commits, install project dependencies so git hooks (husky/lint-staged/prettier) run:
+\`\`\`bash
+if [ -f bun.lockb ] || [ -f bun.lock ]; then bun install
+elif [ -f package-lock.json ]; then npm install
+elif [ -f yarn.lock ]; then yarn install
+elif [ -f pnpm-lock.yaml ]; then pnpm install
+fi
+\`\`\`
 
 ## Useful Commands
 - \`gh run list --repo ${ctx.repo} --limit 5\` — check recent CI runs
@@ -325,6 +346,18 @@ git checkout -b <branch-name>
 \`\`\`
 
 Send an \`[action:Cloning repository] owner/repo\` activity.
+
+### Step 3.5: Install dependencies
+Before making any commits, install project dependencies so git hooks (husky/lint-staged/prettier) are set up:
+\`\`\`bash
+# Detect package manager from lockfiles and install
+if [ -f bun.lockb ] || [ -f bun.lock ]; then bun install
+elif [ -f package-lock.json ]; then npm install
+elif [ -f yarn.lock ]; then yarn install
+elif [ -f pnpm-lock.yaml ]; then pnpm install
+fi
+\`\`\`
+This ensures pre-commit hooks run automatically and CI won't fail due to formatting issues.
 
 ### Step 4: Implement
 - Read the relevant code to understand the codebase
