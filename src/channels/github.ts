@@ -333,13 +333,20 @@ export class GitHubChannel implements Channel {
         payload.sender?.login || payload.sender?.id?.toString() || 'github';
 
       // Filter by allowed senders if configured.
-      // Skip filtering for check_suite events — the sender is always GitHub/Actions,
-      // not the PR author, so the allowlist would incorrectly block all CI events.
+      // Skip filtering for:
+      // - check_suite events (sender is always GitHub/Actions, not the PR author)
+      // - events from the bot itself
+      // - events on the bot's own PRs/issues (reviews, comments, CI from anyone
+      //   should always reach the container so the agent can respond)
+      const author = extractAuthor(event, payload);
+      const isBotOwnedThread =
+        !!this.botUsername && author === this.botUsername;
       if (
         event !== 'check_suite' &&
         this.allowedSenders &&
         !this.allowedSenders.has(senderName) &&
-        senderName !== this.botUsername
+        senderName !== this.botUsername &&
+        !isBotOwnedThread
       ) {
         logger.debug(
           { sender: senderName, event },

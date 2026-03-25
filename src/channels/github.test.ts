@@ -1326,6 +1326,125 @@ describe('GitHubChannel sender allowlist', () => {
     expect(opts.onMessage).toHaveBeenCalled();
   });
 
+  it('delivers events from non-allowed senders on bot-authored PRs', async () => {
+    opts = createTestOpts();
+    channel = new GitHubChannel(
+      SECRET,
+      'test-token',
+      ['alice'],
+      opts,
+      'my-bot',
+    );
+    await channel.connect();
+    const result = await startServer(opts.app!);
+    server = result.server;
+    port = result.port;
+
+    // A reviewer not in the allowlist comments on the bot's own PR
+    await sendWebhook(port, {
+      event: 'pull_request_review',
+      secret: SECRET,
+      payload: {
+        action: 'submitted',
+        repository: { full_name: 'cmraible/seb' },
+        pull_request: {
+          number: 99,
+          title: 'Bot auto-fix',
+          html_url: 'https://github.com/cmraible/seb/pull/99',
+          user: { login: 'my-bot' },
+        },
+        review: {
+          state: 'changes_requested',
+          body: 'Please fix the typo',
+          user: { login: 'stranger' },
+          html_url:
+            'https://github.com/cmraible/seb/pull/99#pullrequestreview-1',
+        },
+        sender: { login: 'stranger' },
+      },
+    });
+
+    expect(opts.onMessage).toHaveBeenCalled();
+  });
+
+  it('delivers issue_comment from non-allowed sender on bot-authored PR', async () => {
+    opts = createTestOpts();
+    channel = new GitHubChannel(
+      SECRET,
+      'test-token',
+      ['alice'],
+      opts,
+      'my-bot',
+    );
+    await channel.connect();
+    const result = await startServer(opts.app!);
+    server = result.server;
+    port = result.port;
+
+    await sendWebhook(port, {
+      event: 'issue_comment',
+      secret: SECRET,
+      payload: {
+        action: 'created',
+        repository: { full_name: 'cmraible/seb' },
+        issue: {
+          number: 99,
+          title: 'Bot auto-fix',
+          pull_request: { url: 'https://api.github.com/...' },
+          user: { login: 'my-bot' },
+        },
+        comment: {
+          user: { login: 'stranger' },
+          body: 'Looks good but needs a test',
+          html_url: 'https://github.com/cmraible/seb/pull/99#issuecomment-1',
+        },
+        sender: { login: 'stranger' },
+      },
+    });
+
+    expect(opts.onMessage).toHaveBeenCalled();
+  });
+
+  it('still drops events from non-allowed senders on non-bot PRs', async () => {
+    opts = createTestOpts();
+    channel = new GitHubChannel(
+      SECRET,
+      'test-token',
+      ['alice'],
+      opts,
+      'my-bot',
+    );
+    await channel.connect();
+    const result = await startServer(opts.app!);
+    server = result.server;
+    port = result.port;
+
+    await sendWebhook(port, {
+      event: 'pull_request_review',
+      secret: SECRET,
+      payload: {
+        action: 'submitted',
+        repository: { full_name: 'cmraible/seb' },
+        pull_request: {
+          number: 100,
+          title: 'Someone else PR',
+          html_url: 'https://github.com/cmraible/seb/pull/100',
+          user: { login: 'alice' },
+        },
+        review: {
+          state: 'approved',
+          body: 'LGTM',
+          user: { login: 'stranger' },
+          html_url:
+            'https://github.com/cmraible/seb/pull/100#pullrequestreview-2',
+        },
+        sender: { login: 'stranger' },
+      },
+    });
+
+    expect(opts.onMessage).not.toHaveBeenCalled();
+  });
+
   it('supports multiple allowed senders', async () => {
     opts = createTestOpts();
     channel = new GitHubChannel(SECRET, 'test-token', ['alice', 'bob'], opts);
