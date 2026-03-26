@@ -381,6 +381,12 @@ export class LinearChannel implements Channel {
   private allowedTeams: Set<string> | null;
   /** Map from chatJid to active agent session ID — persisted to DB */
   private activeAgentSessions = new Map<string, string>();
+  /** OAuth redirect URI for authorization flow */
+  private redirectUri: string;
+  /** Timestamp of last re-auth notification (rate-limit to once per 2 hours) */
+  private lastReauthNotification: number = 0;
+  /** Interval handle for token health check */
+  private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     webhookSecret: string,
@@ -389,6 +395,7 @@ export class LinearChannel implements Channel {
     botUserId: string,
     opts: ChannelOpts,
     allowedTeams: string[] = [],
+    redirectUri?: string,
   ) {
     this.webhookSecret = webhookSecret;
     this.clientId = clientId;
@@ -396,6 +403,8 @@ export class LinearChannel implements Channel {
     this.botUserId = botUserId;
     this.opts = opts;
     this.allowedTeams = allowedTeams.length > 0 ? new Set(allowedTeams) : null;
+    this.redirectUri =
+      redirectUri || 'https://webhooks.seb-writes-code.dev/linear/callback';
 
     // Restore active agent sessions from DB
     this.loadAgentSessions();
@@ -438,6 +447,81 @@ export class LinearChannel implements Channel {
   private deleteAgentSession(jid: string): void {
     this.activeAgentSessions.delete(jid);
     this.saveAgentSessions();
+  }
+
+  /** Rate limit: at most one re-auth notification every 2 hours */
+  private static REAUTH_NOTIFY_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
+  /**
+   * Send a re-auth notification to the main group (rate-limited).
+   */
+  private async notifyReauthNeeded(): Promise<void> {
+    const now = Date.now();
+    if (
+      now - this.lastReauthNotification <
+      LinearChannel.REAUTH_NOTIFY_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.lastReauthNotification = now;
+
+    const authorizeUrl = `${this.redirectUri.replace('/callback', '/authorize')}`;
+    const message =
+      `⚠️ Linear OAuth token has expired and could not be refreshed.\n` +
+      `User-level operations (assign, comment, agent sessions) are degraded.\n\n` +
+      `Re-authorize here: ${authorizeUrl}`;
+
+    if (this.opts.notifyMainGroup) {
+      try {
+        await this.opts.notifyMainGroup(message);
+      } catch (err) {
+        logger.warn({ err }, 'Failed to send Linear re-auth notification');
+      }
+    } else {
+      logger.warn(
+        'Linear OAuth token expired but no notifyMainGroup callback configured',
+      );
+    }
+  }
+
+  /**
+   * Periodic token health check — verifies the token works with a lightweight query.
+   */
+  private async checkTokenHealth(): Promise<void> {
+    if (!this.clientId || !this.clientSecret) return;
+
+    const token = this.accessToken;
+    if (!token) {
+      await this.notifyReauthNeeded();
+      return;
+    }
+
+    try {
+      const viewerId = await fetchLinearViewerId(token);
+      if (this.botUserId && viewerId !== this.botUserId) {
+        logger.warn(
+          { expected: this.botUserId, got: viewerId },
+          'Linear token viewer mismatch — token may belong to wrong user',
+        );
+        await this.notifyReauthNeeded();
+      }
+    } catch (err) {
+      const errMsg = String(err);
+      if (errMsg.includes('401') || errMsg.includes('unauthorized')) {
+        logger.warn('Linear token health check failed (401) — token expired');
+        // Invalidate cached token so next getAccessToken() tries to refresh
+        this.accessToken = null;
+        this.tokenFetchedAt = 0;
+        // Try refreshing now
+        const refreshed = await this.getAccessToken();
+        if (!refreshed || refreshed === this.accessToken) {
+          // If getAccessToken fell back to client_credentials, notify
+          // (the notification is sent inside getAccessToken on refresh failure)
+        }
+      } else {
+        logger.warn({ err }, 'Linear token health check failed (non-auth)');
+      }
+    }
   }
 
   /** Max age for cached tokens (50 minutes) — well under Linear's 1-hour expiry */
@@ -504,6 +588,8 @@ export class LinearChannel implements Channel {
           { err },
           'Failed to refresh Linear OAuth token, falling back to client credentials',
         );
+        // Notify main group that re-auth is needed
+        this.notifyReauthNeeded().catch(() => {});
       }
     }
 
@@ -576,6 +662,25 @@ export class LinearChannel implements Channel {
       this.processWebhook(type, action, payload, deliveryId).catch((err) =>
         logger.error({ err, type, action }, 'Error processing Linear webhook'),
       );
+    });
+
+    // OAuth authorization route — generates and redirects to Linear OAuth URL
+    app.get('/linear/authorize', (_req, res) => {
+      if (!this.clientId) {
+        res.status(500).send('LINEAR_OAUTH_CLIENT_ID not configured');
+        return;
+      }
+
+      const params = new URLSearchParams({
+        client_id: this.clientId,
+        redirect_uri: this.redirectUri,
+        response_type: 'code',
+        scope: 'read,write,issues:create,comments:create,admin',
+        prompt: 'consent',
+      });
+
+      const url = `https://linear.app/oauth/authorize?${params.toString()}`;
+      res.redirect(url);
     });
 
     // OAuth callback handler for agent installation
@@ -688,9 +793,21 @@ export class LinearChannel implements Channel {
       });
     }
 
+    // Start periodic token health check (every 30 minutes)
+    if (this.clientId && this.clientSecret) {
+      this.healthCheckInterval = setInterval(
+        () => {
+          this.checkTokenHealth().catch((err) =>
+            logger.error({ err }, 'Linear token health check error'),
+          );
+        },
+        30 * 60 * 1000,
+      );
+    }
+
     this.connected = true;
     logger.info(
-      'Linear routes mounted on /linear/webhook, /linear/callback, and /linear/authorize',
+      'Linear routes mounted on /linear/webhook, /linear/authorize, and /linear/callback',
     );
   }
 
@@ -1186,13 +1303,11 @@ export class LinearChannel implements Channel {
    * persist both, and update the in-memory state.
    */
   async handleOAuthCallback(code: string): Promise<void> {
-    const redirectUri = 'https://webhooks.seb-writes-code.dev/linear/callback';
-
     const { access_token, refresh_token } = await exchangeLinearOAuthCode(
       code,
       this.clientId,
       this.clientSecret,
-      redirectUri,
+      this.redirectUri,
     );
 
     const botUserId = await fetchLinearViewerId(access_token);
@@ -1406,6 +1521,10 @@ export class LinearChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
     this.connected = false;
     logger.info('Linear channel disconnected');
   }
@@ -1418,6 +1537,8 @@ registerChannel('linear', (opts: ChannelOpts) => {
     'LINEAR_CLIENT_SECRET',
     'LINEAR_BOT_USER_ID',
     'LINEAR_ALLOWED_TEAMS',
+    'LINEAR_OAUTH_REDIRECT_URI',
+    'PUBLIC_HOST',
   ]);
   const secret =
     process.env.LINEAR_WEBHOOK_SECRET || envVars.LINEAR_WEBHOOK_SECRET || '';
@@ -1433,6 +1554,11 @@ registerChannel('linear', (opts: ChannelOpts) => {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  const publicHost = process.env.PUBLIC_HOST || envVars.PUBLIC_HOST || '';
+  const redirectUri =
+    process.env.LINEAR_OAUTH_REDIRECT_URI ||
+    envVars.LINEAR_OAUTH_REDIRECT_URI ||
+    (publicHost ? `https://${publicHost}/linear/callback` : '');
 
   if (!secret) {
     logger.warn('Linear: LINEAR_WEBHOOK_SECRET not set');
@@ -1463,5 +1589,6 @@ registerChannel('linear', (opts: ChannelOpts) => {
     botUserId,
     opts,
     allowedTeams,
+    redirectUri || undefined,
   );
 });
