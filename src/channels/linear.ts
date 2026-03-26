@@ -512,12 +512,8 @@ export class LinearChannel implements Channel {
         // Invalidate cached token so next getAccessToken() tries to refresh
         this.accessToken = null;
         this.tokenFetchedAt = 0;
-        // Try refreshing now
-        const refreshed = await this.getAccessToken();
-        if (!refreshed || refreshed === this.accessToken) {
-          // If getAccessToken fell back to client_credentials, notify
-          // (the notification is sent inside getAccessToken on refresh failure)
-        }
+        // Try refreshing — getAccessToken() will notify if refresh fails
+        await this.getAccessToken();
       } else {
         logger.warn({ err }, 'Linear token health check failed (non-auth)');
       }
