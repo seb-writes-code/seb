@@ -1,6 +1,10 @@
+import fs from 'fs';
+import path from 'path';
+
 import { Api, Bot, InlineKeyboard } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN, WEBAPP_URL } from '../config.js';
+import { GROUPS_DIR } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { formatNextRun, formatSchedule } from '../format-schedule.js';
 import { logger } from '../logger.js';
@@ -97,6 +101,129 @@ export class TelegramChannel implements Channel {
       // Delay restart so grammy can advance the Telegram update offset.
       // Without this, the /restart update is re-delivered on every startup → bootloop.
       setTimeout(() => this.opts.requestRestart!(), 500);
+    });
+
+    // Command to list all registered groups
+    this.bot.command('groups', (ctx) => {
+      const topicId = (ctx.message as any)?.message_thread_id;
+      const chatJid = topicId
+        ? `tg:${ctx.chat.id}:${topicId}`
+        : `tg:${ctx.chat.id}`;
+      const callerGroup = this.opts.registeredGroups()[chatJid];
+      if (!callerGroup?.isMain) {
+        ctx.reply('⚠️ /groups is only available in the main group.');
+        return;
+      }
+
+      const groups = this.opts.registeredGroups();
+      const entries = Object.entries(groups);
+      if (entries.length === 0) {
+        ctx.reply('No registered groups.');
+        return;
+      }
+
+      const lines: string[] = [`📂 *Registered Groups* (${entries.length})\n`];
+      for (const [jid, g] of entries) {
+        const trigger = g.requiresTrigger === false ? '(auto)' : g.trigger;
+        const flags: string[] = [];
+        if (g.isMain) flags.push('main');
+        if (g.metadata?.type) flags.push(g.metadata.type);
+        const flagStr = flags.length > 0 ? ` [${flags.join(', ')}]` : '';
+        lines.push(
+          `• *${g.name}*${flagStr}\n  📁 \`${g.folder}\` | 🔔 ${trigger}`,
+        );
+      }
+      lines.push(`\n_Use /group <folder> for details_`);
+
+      ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    });
+
+    // Command to inspect a specific group's config
+    this.bot.command('group', (ctx) => {
+      const topicId = (ctx.message as any)?.message_thread_id;
+      const chatJid = topicId
+        ? `tg:${ctx.chat.id}:${topicId}`
+        : `tg:${ctx.chat.id}`;
+      const callerGroup = this.opts.registeredGroups()[chatJid];
+      if (!callerGroup?.isMain) {
+        ctx.reply('⚠️ /group is only available in the main group.');
+        return;
+      }
+
+      const folderArg = ctx.message?.text?.split(/\s+/)[1]?.trim();
+      if (!folderArg) {
+        ctx.reply(
+          'Usage: /group <folder>\nUse /groups to see available folders.',
+        );
+        return;
+      }
+
+      // Find the group by folder name
+      const groups = this.opts.registeredGroups();
+      const match = Object.entries(groups).find(
+        ([, g]) => g.folder === folderArg,
+      );
+      if (!match) {
+        ctx.reply(`Group with folder \`${folderArg}\` not found.`);
+        return;
+      }
+
+      const [jid, g] = match;
+
+      // Build detail view
+      const lines: string[] = [`🔍 *Group: ${g.name}*\n`];
+      lines.push(`*JID:* \`${jid}\``);
+      lines.push(`*Folder:* \`${g.folder}\``);
+      lines.push(`*Trigger:* ${g.trigger}`);
+      lines.push(
+        `*Requires trigger:* ${g.requiresTrigger === false ? 'No (auto-process)' : 'Yes'}`,
+      );
+      if (g.isMain) lines.push(`*Main group:* Yes`);
+      lines.push(`*Added:* ${g.added_at}`);
+
+      // Metadata
+      if (g.metadata && Object.keys(g.metadata).length > 0) {
+        lines.push(`\n*Metadata:*`);
+        for (const [k, v] of Object.entries(g.metadata)) {
+          const display = v.length > 100 ? v.slice(0, 97) + '...' : v;
+          lines.push(`  ${k}: ${display}`);
+        }
+      }
+
+      // Container config
+      if (g.containerConfig) {
+        lines.push(`\n*Container Config:*`);
+        if (g.containerConfig.runtime)
+          lines.push(`  Runtime: ${g.containerConfig.runtime}`);
+        if (g.containerConfig.timeout)
+          lines.push(`  Timeout: ${g.containerConfig.timeout}ms`);
+        if (g.containerConfig.additionalMounts?.length) {
+          lines.push(`  Mounts:`);
+          for (const m of g.containerConfig.additionalMounts) {
+            lines.push(
+              `    ${m.hostPath} → ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+            );
+          }
+        }
+      }
+
+      // CLAUDE.md preview
+      const claudeMdPath = path.join(GROUPS_DIR, g.folder, 'CLAUDE.md');
+      try {
+        if (fs.existsSync(claudeMdPath)) {
+          const content = fs.readFileSync(claudeMdPath, 'utf-8');
+          const preview =
+            content.length > 500 ? content.slice(0, 497) + '...' : content;
+          lines.push(`\n*CLAUDE.md:*`);
+          lines.push(`\`\`\`\n${preview}\n\`\`\``);
+        } else {
+          lines.push(`\n_No CLAUDE.md_`);
+        }
+      } catch {
+        lines.push(`\n_Could not read CLAUDE.md_`);
+      }
+
+      ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
     });
 
     // Remote control commands — forward through onMessage so the handler
