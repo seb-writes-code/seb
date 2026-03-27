@@ -14,7 +14,16 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
+  ONECLI_URL: 'http://localhost:9999',
   TIMEZONE: 'America/Los_Angeles',
+}));
+
+// Mock OneCLI SDK
+vi.mock('@onecli-sh/sdk', () => ({
+  OneCLI: class {
+    getCredentials = vi.fn().mockResolvedValue({});
+    applyContainerConfig = vi.fn().mockReturnValue(Promise.resolve(true));
+  },
 }));
 
 // Mock logger
@@ -50,74 +59,44 @@ vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
 }));
 
-// Create a controllable fake RuntimeInstance backed by EventEmitter + streams
+// Create a controllable fake ChildProcess backed by EventEmitter + streams
 import { PassThrough } from 'stream';
 import fs from 'fs';
-import type { RuntimeInstance } from './runtime/runtime.js';
 
-function createFakeInstance(): RuntimeInstance & {
-  _stdout: PassThrough;
-  _stderr: PassThrough;
-  _emitter: EventEmitter;
-  _stdinData: string[];
-} {
+function createFakeProcess() {
   const emitter = new EventEmitter();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
-  const stdinData: string[] = [];
+  const stdin = new PassThrough();
 
-  return {
-    name: 'nanoclaw-test-123',
-    _stdout: stdout,
-    _stderr: stderr,
-    _emitter: emitter,
-    _stdinData: stdinData,
-    writeInput(data: string) {
-      stdinData.push(data);
-    },
-    closeInput() {
-      /* no-op */
-    },
+  const proc = Object.assign(emitter, {
+    stdout,
+    stderr,
+    stdin,
+    pid: 12345,
+    killed: false,
     kill: vi.fn(),
-    onStdout(handler: (data: Buffer) => void) {
-      stdout.on('data', handler);
-    },
-    onStderr(handler: (data: Buffer) => void) {
-      stderr.on('data', handler);
-    },
-    onClose(handler: (code: number | null) => void) {
-      emitter.on('close', handler);
-    },
-    onError(handler: (err: Error) => void) {
-      emitter.on('error', handler);
-    },
-    async stop() {
-      /* no-op */
-    },
-  };
+  });
+
+  return proc;
 }
 
-let fakeInstance: ReturnType<typeof createFakeInstance>;
+let fakeProcess: ReturnType<typeof createFakeProcess>;
 
-// Mock the runtime module
-vi.mock('./runtime/index.js', () => ({
-  getRuntime: vi.fn(() => ({
-    type: 'docker',
-    ensureRunning: vi.fn(),
-    cleanupOrphans: vi.fn(),
-    stopCommand: (name: string) => `docker stop ${name}`,
-    start: vi.fn(async () => fakeInstance),
-  })),
-}));
-
-// Mock child_process.exec (used for timeout stop command)
+// Mock child_process: spawn returns our fake process, execFile is a no-op
 vi.mock('child_process', async () => {
   const actual =
     await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
-    exec: vi.fn(
-      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+    spawn: vi.fn(() => fakeProcess),
+    execFile: vi.fn(
+      (
+        _file: string,
+        _args: string[],
+        _opts: unknown,
+        cb?: (err: Error | null) => void,
+      ) => {
         if (cb) cb(null);
         return new EventEmitter();
       },
@@ -149,19 +128,17 @@ const testInput = {
 };
 
 function emitOutputMarker(
-  instance: ReturnType<typeof createFakeInstance>,
+  proc: ReturnType<typeof createFakeProcess>,
   output: ContainerOutput,
 ) {
   const json = JSON.stringify(output);
-  instance._stdout.push(
-    `${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`,
-  );
+  proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
 }
 
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    fakeInstance = createFakeInstance();
+    fakeProcess = createFakeProcess();
   });
 
   afterEach(() => {
@@ -177,8 +154,12 @@ describe('container-runner timeout behavior', () => {
       onOutput,
     );
 
+    // Flush async setup (OneCLI applyContainerConfig, buildContainerArgs, runtime.start)
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(1);
+
     // Emit output with a result
-    emitOutputMarker(fakeInstance, {
+    emitOutputMarker(fakeProcess, {
       status: 'success',
       result: 'Here is my response',
       newSessionId: 'session-123',
@@ -191,7 +172,7 @@ describe('container-runner timeout behavior', () => {
     await vi.advanceTimersByTimeAsync(1830000);
 
     // Emit close event (as if container was stopped by the timeout)
-    fakeInstance._emitter.emit('close', 137);
+    fakeProcess.emit('close', 137);
 
     // Let the promise resolve
     await vi.advanceTimersByTimeAsync(10);
@@ -213,11 +194,14 @@ describe('container-runner timeout behavior', () => {
       onOutput,
     );
 
+    // Flush async setup (OneCLI applyContainerConfig, runtime.start)
+    await vi.advanceTimersByTimeAsync(0);
+
     // No output emitted — fire the hard timeout
     await vi.advanceTimersByTimeAsync(1830000);
 
     // Emit close event
-    fakeInstance._emitter.emit('close', 137);
+    fakeProcess.emit('close', 137);
 
     await vi.advanceTimersByTimeAsync(10);
 
@@ -238,8 +222,12 @@ describe('container-runner timeout behavior', () => {
       onOutput,
     );
 
+    // Flush async setup (OneCLI applyContainerConfig, buildContainerArgs, runtime.start)
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(1);
+
     // Emit output — onOutput will throw
-    emitOutputMarker(fakeInstance, {
+    emitOutputMarker(fakeProcess, {
       status: 'success',
       result: 'Agent response',
       newSessionId: 'session-err',
@@ -248,7 +236,7 @@ describe('container-runner timeout behavior', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Normal exit
-    fakeInstance._emitter.emit('close', 0);
+    fakeProcess.emit('close', 0);
 
     await vi.advanceTimersByTimeAsync(10);
 
@@ -267,8 +255,11 @@ describe('container-runner timeout behavior', () => {
       onOutput,
     );
 
+    // Flush async setup (OneCLI applyContainerConfig, runtime.start)
+    await vi.advanceTimersByTimeAsync(0);
+
     // Emit output
-    emitOutputMarker(fakeInstance, {
+    emitOutputMarker(fakeProcess, {
       status: 'success',
       result: 'Done',
       newSessionId: 'session-456',
@@ -277,7 +268,7 @@ describe('container-runner timeout behavior', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Normal exit (no timeout)
-    fakeInstance._emitter.emit('close', 0);
+    fakeProcess.emit('close', 0);
 
     await vi.advanceTimersByTimeAsync(10);
 
