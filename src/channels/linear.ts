@@ -387,6 +387,8 @@ export class LinearChannel implements Channel {
   private lastReauthNotification: number = 0;
   /** Interval handle for token health check */
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+  /** Pending OAuth state tokens for CSRF protection (state -> expiry timestamp) */
+  private pendingOAuthStates = new Map<string, number>();
 
   constructor(
     webhookSecret: string,
@@ -452,6 +454,16 @@ export class LinearChannel implements Channel {
   /** Rate limit: at most one re-auth notification every 2 hours */
   private static REAUTH_NOTIFY_INTERVAL_MS = 2 * 60 * 60 * 1000;
 
+  /** Derive the authorize endpoint URL from the redirect URI base host */
+  private getAuthorizeBaseUrl(): string {
+    try {
+      const url = new URL(this.redirectUri);
+      return `${url.origin}/linear/authorize`;
+    } catch {
+      return this.redirectUri.replace('/callback', '/authorize');
+    }
+  }
+
   /**
    * Send a re-auth notification to the main group (rate-limited).
    */
@@ -465,7 +477,7 @@ export class LinearChannel implements Channel {
     }
     this.lastReauthNotification = now;
 
-    const authorizeUrl = `${this.redirectUri.replace('/callback', '/authorize')}`;
+    const authorizeUrl = this.getAuthorizeBaseUrl();
     const message =
       `⚠️ Linear OAuth token has expired and could not be refreshed.\n` +
       `User-level operations (assign, comment, agent sessions) are degraded.\n\n` +
@@ -667,12 +679,17 @@ export class LinearChannel implements Channel {
         return;
       }
 
+      // Generate CSRF state token (expires after 10 minutes)
+      const state = crypto.randomBytes(32).toString('hex');
+      this.pendingOAuthStates.set(state, Date.now() + 10 * 60 * 1000);
+
       const params = new URLSearchParams({
         client_id: this.clientId,
         redirect_uri: this.redirectUri,
         response_type: 'code',
         scope: 'read,write,issues:create,comments:create,admin',
         prompt: 'consent',
+        state,
       });
 
       const url = `https://linear.app/oauth/authorize?${params.toString()}`;
@@ -682,9 +699,27 @@ export class LinearChannel implements Channel {
     // OAuth callback handler for agent installation
     app.get('/linear/callback', (req, res) => {
       const code = req.query.code as string | undefined;
+      const state = req.query.state as string | undefined;
+
       if (!code) {
         res.status(400).send('Missing authorization code');
         return;
+      }
+
+      // Verify OAuth state parameter for CSRF protection
+      if (state) {
+        const expiry = this.pendingOAuthStates.get(state);
+        this.pendingOAuthStates.delete(state);
+        if (!expiry || Date.now() > expiry) {
+          res.status(403).send('Invalid or expired OAuth state');
+          return;
+        }
+      }
+
+      // Clean up expired states
+      const now = Date.now();
+      for (const [s, exp] of this.pendingOAuthStates) {
+        if (now > exp) this.pendingOAuthStates.delete(s);
       }
 
       this.handleOAuthCallback(code)
