@@ -809,6 +809,14 @@ async function main(): Promise<void> {
     requestProcessing: (chatJid: string) => {
       queue.enqueueMessageCheck(chatJid);
     },
+    notifyMainGroup: async (text: string) => {
+      const mainJid = Object.entries(registeredGroups).find(
+        ([, g]) => g.isMain,
+      )?.[0];
+      if (!mainJid) return;
+      const channel = findChannel(channels, mainJid);
+      if (channel) await channel.sendMessage(mainJid, text);
+    },
   };
 
   // Create and connect all registered channels.

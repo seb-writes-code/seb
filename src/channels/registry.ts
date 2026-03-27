@@ -22,6 +22,8 @@ export interface ChannelOpts {
   requestRestart?: () => void;
   /** Request immediate processing for a group (bypasses polling interval) */
   requestProcessing?: (chatJid: string) => void;
+  /** Send a notification to the main control group (e.g. Telegram) */
+  notifyMainGroup?: (text: string) => Promise<void>;
 }
 
 export type ChannelFactory = (opts: ChannelOpts) => Channel | null;
