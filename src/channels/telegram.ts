@@ -4,6 +4,7 @@ import { ASSISTANT_NAME, TRIGGER_PATTERN, WEBAPP_URL } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { formatNextRun, formatSchedule } from '../format-schedule.js';
 import { logger } from '../logger.js';
+import { formatTelegramMarkdownV2 } from './telegram-format.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -20,6 +21,15 @@ function sanitize(s: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 40);
+}
+
+/** Split text into chunks of at most maxLength characters */
+function splitText(text: string, maxLength: number): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += maxLength) {
+    chunks.push(text.slice(i, i + maxLength));
+  }
+  return chunks;
 }
 
 export interface TelegramChannelOpts {
@@ -60,10 +70,10 @@ export class TelegramChannel implements Channel {
           ? ctx.from?.first_name || 'Private'
           : (ctx.chat as any).title || 'Unknown';
 
-      ctx.reply(
+      const chatIdMsg = formatTelegramMarkdownV2(
         `Chat ID: \`${chatJid}\`\nName: ${chatName}\nType: ${chatType}`,
-        { parse_mode: 'Markdown' },
       );
+      ctx.reply(chatIdMsg, { parse_mode: 'MarkdownV2' });
     });
 
     // Command to check bot status
@@ -185,8 +195,8 @@ export class TelegramChannel implements Channel {
         }
       }
 
-      ctx.reply(lines.join('\n\n'), {
-        parse_mode: 'Markdown',
+      ctx.reply(formatTelegramMarkdownV2(lines.join('\n\n')), {
+        parse_mode: 'MarkdownV2',
         reply_markup: keyboard,
       });
     });
@@ -460,15 +470,30 @@ export class TelegramChannel implements Channel {
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await this.bot.api.sendMessage(chatId, text, threadOpts);
-      } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await this.bot.api.sendMessage(
-            chatId,
-            text.slice(i, i + MAX_LENGTH),
-            threadOpts,
+      const formatted = formatTelegramMarkdownV2(text);
+      const chunks =
+        formatted.length <= MAX_LENGTH
+          ? [formatted]
+          : splitText(formatted, MAX_LENGTH);
+
+      for (const chunk of chunks) {
+        try {
+          await this.bot.api.sendMessage(chatId, chunk, {
+            ...threadOpts,
+            parse_mode: 'MarkdownV2',
+          });
+        } catch {
+          // MarkdownV2 parsing failed — fall back to plain text
+          const plainChunks =
+            text.length <= MAX_LENGTH ? [text] : splitText(text, MAX_LENGTH);
+          for (const plain of plainChunks) {
+            await this.bot.api.sendMessage(chatId, plain, threadOpts);
+          }
+          logger.info(
+            { jid, length: text.length },
+            'Telegram message sent (plain text fallback)',
           );
+          return;
         }
       }
       logger.info({ jid, length: text.length }, 'Telegram message sent');
@@ -589,16 +614,34 @@ export async function sendPoolMessage(
   try {
     const numericId = chatId.replace(/^tg:/, '');
     const MAX_LENGTH = 4096;
-    if (text.length <= MAX_LENGTH) {
-      await api.sendMessage(numericId, text);
-    } else {
-      for (let i = 0; i < text.length; i += MAX_LENGTH) {
-        await api.sendMessage(numericId, text.slice(i, i + MAX_LENGTH));
+    const formatted = formatTelegramMarkdownV2(text);
+    const chunks =
+      formatted.length <= MAX_LENGTH
+        ? [formatted]
+        : splitText(formatted, MAX_LENGTH);
+
+    let usedFallback = false;
+    for (const chunk of chunks) {
+      try {
+        await api.sendMessage(numericId, chunk, {
+          parse_mode: 'MarkdownV2',
+        });
+      } catch {
+        // MarkdownV2 failed — fall back to plain text for all chunks
+        const plainChunks =
+          text.length <= MAX_LENGTH ? [text] : splitText(text, MAX_LENGTH);
+        for (const plain of plainChunks) {
+          await api.sendMessage(numericId, plain);
+        }
+        usedFallback = true;
+        break;
       }
     }
     logger.info(
       { chatId, sender, poolIndex: idx, length: text.length },
-      'Pool message sent',
+      usedFallback
+        ? 'Pool message sent (plain text fallback)'
+        : 'Pool message sent',
     );
   } catch (err) {
     logger.error({ chatId, sender, err }, 'Failed to send pool message');
