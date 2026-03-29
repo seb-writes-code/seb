@@ -13,9 +13,12 @@ Read `CLAUDE.md` in the workspace to find the PR number and repository.
 
 ## Step 2: Fetch review comments
 
-```bash
-gh api repos/<owner>/<repo>/pulls/<number>/reviews
-gh api repos/<owner>/<repo>/pulls/<number>/comments
+Use the GitHub MCP tools:
+
+```
+mcp__github__get_pull_request — get PR details
+mcp__github__list_pull_request_reviews — get reviews
+mcp__github__list_review_comments — get review comments
 ```
 
 Filter for unresolved/pending comments. Group comments by thread.
@@ -24,9 +27,10 @@ Filter for unresolved/pending comments. Group comments by thread.
 
 ```bash
 cd /tmp
-gh repo clone <owner>/<repo> pr-review -- --depth=50
+git clone git@github.com:<owner>/<repo>.git pr-review --depth=50
 cd pr-review
-gh pr checkout <number>
+git fetch origin pull/<number>/head:pr-branch
+git checkout pr-branch
 ```
 
 ## Step 4: Address each comment
@@ -45,16 +49,23 @@ Keep changes minimal and focused on what the reviewer asked for.
 ```bash
 git add <files>
 git commit -m "address review feedback"
-git push
+git push origin pr-branch:<head-branch>
 ```
 
 ## Step 6: Reply to comments
 
-For each addressed comment, reply confirming the fix:
+For each addressed comment, reply confirming the fix using the GitHub MCP tools:
+
+```
+mcp__github__create_review_comment_reply — reply to a review comment
+```
+
+Or via the API:
 
 ```bash
-gh api repos/<owner>/<repo>/pulls/<number>/comments/<comment-id>/replies \
-  -f body="Done — fixed in the latest push."
+curl -s -X POST "https://api.github.com/repos/<owner>/<repo>/pulls/<number>/comments/<comment-id>/replies" \
+  -H "Content-Type: application/json" \
+  -d '{"body": "Done — fixed in the latest push."}'
 ```
 
 ## Step 7: Report

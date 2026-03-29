@@ -12,6 +12,7 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
+  GITHUB_MCP_PORT,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
@@ -322,14 +323,24 @@ async function buildContainerArgs(
   args.push(...hostGatewayArgs());
 
   // Pass non-Anthropic secrets that tools inside the container need.
+  // GITHUB_TOKEN is NOT passed — containers access GitHub via the host-side
+  // GitHub MCP proxy (see github-mcp-proxy.ts) so the token never enters containers.
   const toolSecrets = readEnvFile([
-    'GITHUB_TOKEN',
     'OP_SERVICE_ACCOUNT_TOKEN',
     'LINEAR_CLIENT_ID',
     'LINEAR_CLIENT_SECRET',
   ]);
   for (const [key, value] of Object.entries(toolSecrets)) {
     if (value) args.push('-e', `${key}=${value}`);
+  }
+
+  // Tell the container where the GitHub MCP proxy lives
+  const { GITHUB_TOKEN } = readEnvFile(['GITHUB_TOKEN']);
+  if (GITHUB_TOKEN) {
+    args.push(
+      '-e',
+      `GITHUB_MCP_URL=http://${CONTAINER_HOST_GATEWAY}:${GITHUB_MCP_PORT}`,
+    );
   }
 
   // Read persisted Linear OAuth token if available

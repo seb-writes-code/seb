@@ -24,6 +24,7 @@ import {
   GROUPS_DIR,
   IDLE_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
+  GITHUB_MCP_PORT,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TIMEZONE,
@@ -47,6 +48,7 @@ import {
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import { startCredentialProxy } from './credential-proxy.js';
+import { startGitHubMcpProxy } from './github-mcp-proxy.js';
 import {
   deleteTask,
   getAllChats,
@@ -653,6 +655,13 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Start GitHub MCP proxy (containers access GitHub tools through this,
+  // so the GITHUB_TOKEN never enters any container)
+  const githubMcpServer = await startGitHubMcpProxy(
+    GITHUB_MCP_PORT,
+    PROXY_BIND_HOST,
+  );
+
   // Declared here so the shutdown handler closure can see it;
   // assigned after channels are connected and the webhook server starts.
   let webhookServer: http.Server | null = null;
@@ -662,6 +671,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    githubMcpServer?.close();
     webAppServer?.close();
     if (webhookServer) webhookServer.close();
     await queue.shutdown(10000);

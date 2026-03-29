@@ -21,6 +21,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@modelcontextprotocol/server-github": "^2025.4.8",
     "better-sqlite3": "11.10.0",
     "cron-parser": "5.5.0",
     "express": "^5.2.1",

@@ -13,8 +13,10 @@ Read `CLAUDE.md` in the workspace to find the PR number and repository.
 
 ## Step 2: Check for conflicts
 
-```bash
-gh pr view <number> --repo <owner>/<repo> --json mergeable,baseRefName,headRefName
+Use the GitHub MCP tools to check PR status:
+
+```
+mcp__github__get_pull_request — get PR details including mergeable status
 ```
 
 If the PR is mergeable (no conflicts), report that and stop.
@@ -23,9 +25,10 @@ If the PR is mergeable (no conflicts), report that and stop.
 
 ```bash
 cd /tmp
-gh repo clone <owner>/<repo> rebase-work -- --depth=50
+git clone git@github.com:<owner>/<repo>.git rebase-work --depth=50
 cd rebase-work
-gh pr checkout <number>
+git fetch origin pull/<number>/head:pr-branch
+git checkout pr-branch
 git fetch origin <base-branch>
 git rebase origin/<base-branch>
 ```
@@ -47,7 +50,7 @@ Repeat until the rebase is complete.
 Force-push the rebased branch (this is expected for rebases):
 
 ```bash
-git push --force-with-lease
+git push --force-with-lease origin pr-branch:<head-branch>
 ```
 
 ## Step 6: Report

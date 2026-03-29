@@ -569,6 +569,7 @@ async function runQuery(
         'mcp__nanoclaw__*',
         'mcp__1password__*',
         ...(process.env.LINEAR_ACCESS_TOKEN ? ['mcp__linear__*'] : []),
+        ...(process.env.GITHUB_MCP_URL ? ['mcp__github__*'] : []),
         ...(containerInput.isMain ? ['mcp__gmail__*'] : []),
       ],
       env: sdkEnv,
@@ -597,6 +598,14 @@ async function runQuery(
                 headers: {
                   Authorization: `Bearer ${process.env.LINEAR_ACCESS_TOKEN}`,
                 },
+              },
+            }
+          : {}),
+        ...(process.env.GITHUB_MCP_URL
+          ? {
+              github: {
+                type: 'http' as const,
+                url: process.env.GITHUB_MCP_URL,
               },
             }
           : {}),
