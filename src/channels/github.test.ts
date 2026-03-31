@@ -382,6 +382,133 @@ describe('GitHubChannel', () => {
     });
   });
 
+  describe('review_requested events', () => {
+    it('processes review_requested when reviewer matches botUsername', async () => {
+      // Need a channel with botUsername set
+      const botOpts = createTestOpts();
+      const botChannel = new GitHubChannel(
+        SECRET,
+        'test-github-token',
+        [],
+        botOpts,
+        'seb-writes-code',
+      );
+      await botChannel.connect();
+      const { server: botServer, port: botPort } = await startServer(
+        botOpts.app!,
+      );
+
+      await sendWebhook(botPort, {
+        event: 'pull_request',
+        secret: SECRET,
+        payload: {
+          action: 'review_requested',
+          repository: { full_name: 'cmraible/seb' },
+          pull_request: {
+            number: 10,
+            title: 'Add feature X',
+            html_url: 'https://github.com/cmraible/seb/pull/10',
+            user: { login: 'cmraible' },
+          },
+          requested_reviewer: { login: 'seb-writes-code' },
+          sender: { login: 'cmraible' },
+        },
+      });
+
+      // Wait for async processing
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(botOpts.onMessage).toHaveBeenCalledWith(
+        'gh:cmraible/seb#10',
+        expect.objectContaining({
+          chat_jid: 'gh:cmraible/seb#10',
+          content: expect.stringContaining(
+            'Review requested from seb-writes-code',
+          ),
+        }),
+      );
+
+      // The message should contain review instructions
+      const call = (botOpts.onMessage as any).mock.calls[0];
+      expect(call[1].content).toContain('Please review this PR');
+
+      await botChannel.disconnect();
+      botServer.close();
+    });
+
+    it('skips review_requested when reviewer does not match botUsername', async () => {
+      const botOpts = createTestOpts();
+      const botChannel = new GitHubChannel(
+        SECRET,
+        'test-github-token',
+        [],
+        botOpts,
+        'seb-writes-code',
+      );
+      await botChannel.connect();
+      const { server: botServer, port: botPort } = await startServer(
+        botOpts.app!,
+      );
+
+      await sendWebhook(botPort, {
+        event: 'pull_request',
+        secret: SECRET,
+        payload: {
+          action: 'review_requested',
+          repository: { full_name: 'cmraible/seb' },
+          pull_request: {
+            number: 10,
+            title: 'Add feature X',
+            html_url: 'https://github.com/cmraible/seb/pull/10',
+            user: { login: 'cmraible' },
+          },
+          requested_reviewer: { login: 'other-reviewer' },
+          sender: { login: 'cmraible' },
+        },
+      });
+
+      // Wait for async processing
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(botOpts.onMessage).not.toHaveBeenCalled();
+
+      await botChannel.disconnect();
+      botServer.close();
+    });
+
+    it('processes review_requested when no botUsername is configured', async () => {
+      // Without botUsername, review_requested for any reviewer should be processed
+      await sendWebhook(port, {
+        event: 'pull_request',
+        secret: SECRET,
+        payload: {
+          action: 'review_requested',
+          repository: { full_name: 'cmraible/seb' },
+          pull_request: {
+            number: 10,
+            title: 'Add feature X',
+            html_url: 'https://github.com/cmraible/seb/pull/10',
+            user: { login: 'cmraible' },
+          },
+          requested_reviewer: { login: 'any-reviewer' },
+          sender: { login: 'cmraible' },
+        },
+      });
+
+      // Wait for async processing
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'gh:cmraible/seb#10',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            'Review requested from any-reviewer',
+          ),
+        }),
+      );
+    });
+  });
+
   describe('issue comment events', () => {
     it('routes comments to per-issue JID', async () => {
       await sendWebhook(port, {

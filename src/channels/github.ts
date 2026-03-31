@@ -191,6 +191,12 @@ function formatEvent(event: string, payload: any): FormattedEvent | null {
           text: `[GitHub] PR ${label}: #${pr.number} "${pr.title}" in ${repo}\n${pr.html_url}`,
         };
       }
+      if (action === 'review_requested') {
+        const reviewer = payload.requested_reviewer?.login || 'unknown';
+        return {
+          text: `[GitHub] Review requested from ${reviewer} on PR #${pr.number} "${pr.title}" in ${repo}\n${pr.html_url}\n\nPlease review this PR thoroughly and submit a GitHub review. Read the full diff, check for correctness, security issues, performance, code style, and test coverage. Submit an APPROVE if everything looks good, or REQUEST_CHANGES with specific, actionable feedback on each issue found.`,
+        };
+      }
       return null;
     }
 
@@ -451,6 +457,23 @@ export class GitHubChannel implements Channel {
           );
         }
       }
+    }
+
+    // Skip review_requested events that aren't targeting the bot
+    if (
+      event === 'pull_request' &&
+      payload.action === 'review_requested' &&
+      this.botUsername &&
+      payload.requested_reviewer?.login !== this.botUsername
+    ) {
+      logger.debug(
+        {
+          reviewer: payload.requested_reviewer?.login,
+          botUsername: this.botUsername,
+        },
+        'Skipping review_requested for non-bot reviewer',
+      );
+      return;
     }
 
     // Format the event into a human-readable message
