@@ -64,6 +64,7 @@ beforeEach(() => {
     getAvailableGroups: () => [],
     writeGroupsSnapshot: () => {},
     onTasksChanged: () => {},
+    dispatchContainer: () => {},
   };
 });
 

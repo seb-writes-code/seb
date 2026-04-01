@@ -552,6 +552,64 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'dispatch_container',
+  `Dispatch a new agent container for a specific group. This stores a message and triggers container creation, bypassing webhooks entirely. Use this when you need to programmatically kick off work for a Linear issue, GitHub PR, or any other registered group.
+
+Rate limited to 5 dispatches per minute per source container.`,
+  {
+    groupJid: z
+      .string()
+      .describe(
+        'The JID of the target group (e.g., "linear:CHR-87", "gh:owner/repo#123")',
+      ),
+    message: z
+      .string()
+      .describe(
+        'The message/instructions for the container to process',
+      ),
+    sender: z
+      .string()
+      .optional()
+      .describe(
+        'Sender identity (defaults to "system")',
+      ),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Only the main group can dispatch containers for other groups.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'dispatch_container',
+      groupJid: args.groupJid,
+      message: args.message,
+      sender: args.sender || 'system',
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Container dispatch requested for ${args.groupJid}`,
+        },
+      ],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

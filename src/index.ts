@@ -927,6 +927,20 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    dispatchContainer: (groupJid: string, message: string, sender: string) => {
+      const id = `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      storeMessage({
+        id,
+        chat_jid: groupJid,
+        sender,
+        sender_name: sender,
+        content: message,
+        timestamp: new Date().toISOString(),
+        is_from_me: false,
+        is_bot_message: false,
+      });
+      queue.enqueueMessageCheck(groupJid);
+    },
     onTasksChanged: () => {
       const tasks = getAllTasks();
       const taskRows = tasks.map((t) => ({

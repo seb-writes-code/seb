@@ -30,6 +30,29 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  dispatchContainer: (
+    groupJid: string,
+    message: string,
+    sender: string,
+  ) => void;
+}
+
+// Rate limiter for dispatch_container: max 5 per minute per source group
+const DISPATCH_RATE_LIMIT = 5;
+const DISPATCH_RATE_WINDOW_MS = 60_000;
+const dispatchTimestamps = new Map<string, number[]>();
+
+export function checkDispatchRateLimit(sourceGroup: string): boolean {
+  const now = Date.now();
+  const timestamps = dispatchTimestamps.get(sourceGroup) || [];
+  const recent = timestamps.filter((t) => now - t < DISPATCH_RATE_WINDOW_MS);
+  if (recent.length >= DISPATCH_RATE_LIMIT) {
+    dispatchTimestamps.set(sourceGroup, recent);
+    return false;
+  }
+  recent.push(now);
+  dispatchTimestamps.set(sourceGroup, recent);
+  return true;
 }
 
 let ipcWatcherRunning = false;
@@ -206,6 +229,10 @@ export async function processTaskIpc(
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
+    // For dispatch_container
+    groupJid?: string;
+    message?: string;
+    sender?: string;
     // For register_group
     jid?: string;
     name?: string;
@@ -502,6 +529,49 @@ export async function processTaskIpc(
         logger.warn(
           { data },
           'Invalid register_group request - missing required fields',
+        );
+      }
+      break;
+
+    case 'dispatch_container':
+      if (data.groupJid && data.message) {
+        const targetGroup = registeredGroups[data.groupJid];
+        if (!targetGroup) {
+          logger.warn(
+            { groupJid: data.groupJid, sourceGroup },
+            'dispatch_container: target group not registered',
+          );
+          break;
+        }
+
+        // Authorization: non-main groups can only dispatch to themselves
+        if (!isMain && targetGroup.folder !== sourceGroup) {
+          logger.warn(
+            { sourceGroup, targetFolder: targetGroup.folder },
+            'Unauthorized dispatch_container attempt blocked',
+          );
+          break;
+        }
+
+        // Rate limiting
+        if (!checkDispatchRateLimit(sourceGroup)) {
+          logger.warn(
+            { sourceGroup, groupJid: data.groupJid },
+            'dispatch_container rate limit exceeded (max 5/min)',
+          );
+          break;
+        }
+
+        const sender = data.sender || 'system';
+        deps.dispatchContainer(data.groupJid, data.message, sender);
+        logger.info(
+          { groupJid: data.groupJid, sourceGroup, sender },
+          'Container dispatched via IPC',
+        );
+      } else {
+        logger.warn(
+          { data },
+          'dispatch_container: missing required fields (groupJid, message)',
         );
       }
       break;
