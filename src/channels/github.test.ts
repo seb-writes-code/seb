@@ -380,6 +380,34 @@ describe('GitHubChannel', () => {
         }),
       );
     });
+    it('processes PR review_requested', async () => {
+      await sendWebhook(port, {
+        event: 'pull_request',
+        secret: SECRET,
+        payload: {
+          action: 'review_requested',
+          repository: { full_name: 'cmraible/seb' },
+          pull_request: {
+            number: 10,
+            title: 'Add feature',
+            html_url: 'https://github.com/cmraible/seb/pull/10',
+            merged: false,
+            user: { login: 'cmraible' },
+          },
+          requested_reviewer: { login: 'seb-writes-code' },
+          sender: { login: 'cmraible' },
+        },
+      });
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'gh:cmraible/seb#10',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            'Review requested from seb-writes-code on PR #10 "Add feature"',
+          ),
+        }),
+      );
+    });
   });
 
   describe('issue comment events', () => {

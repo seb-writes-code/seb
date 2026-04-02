@@ -191,6 +191,12 @@ function formatEvent(event: string, payload: any): FormattedEvent | null {
           text: `[GitHub] PR ${label}: #${pr.number} "${pr.title}" in ${repo}\n${pr.html_url}`,
         };
       }
+      if (action === 'review_requested') {
+        const reviewer = payload.requested_reviewer?.login || 'unknown';
+        return {
+          text: `[GitHub] Review requested from ${reviewer} on PR #${pr.number} "${pr.title}" in ${repo}\n${pr.html_url}`,
+        };
+      }
       return null;
     }
 
