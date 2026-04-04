@@ -191,6 +191,15 @@ function formatEvent(event: string, payload: any): FormattedEvent | null {
           text: `[GitHub] PR ${label}: #${pr.number} "${pr.title}" in ${repo}\n${pr.html_url}`,
         };
       }
+      if (action === 'review_requested') {
+        const reviewer =
+          payload.requested_reviewer?.login ||
+          payload.requested_team?.name ||
+          'unknown';
+        return {
+          text: `[GitHub] Review requested from @${reviewer} on PR #${pr.number} "${pr.title}" by ${payload.sender.login}\n${pr.html_url}`,
+        };
+      }
       return null;
     }
 
@@ -413,8 +422,16 @@ export class GitHubChannel implements Channel {
           event === 'issues' &&
           payload.action === 'assigned' &&
           payload.assignee?.login === this.botUsername;
+        const isBotReviewer =
+          !!this.botUsername &&
+          event === 'pull_request' &&
+          payload.action === 'review_requested' &&
+          payload.requested_reviewer?.login === this.botUsername;
         const skipTrigger =
-          groupType === 'pull_request' || isBotAuthor || isBotAssigned;
+          groupType === 'pull_request' ||
+          isBotAuthor ||
+          isBotAssigned ||
+          isBotReviewer;
         this.opts.registerGroup(chatJid, {
           name: chatName,
           folder,
@@ -440,7 +457,12 @@ export class GitHubChannel implements Channel {
           event === 'issues' &&
           payload.action === 'assigned' &&
           payload.assignee?.login === this.botUsername;
-        if (isBotAuthor || isBotAssigned) {
+        const isBotReviewer =
+          !!this.botUsername &&
+          event === 'pull_request' &&
+          payload.action === 'review_requested' &&
+          payload.requested_reviewer?.login === this.botUsername;
+        if (isBotAuthor || isBotAssigned || isBotReviewer) {
           this.opts.registerGroup(chatJid, {
             ...registered[chatJid],
             requiresTrigger: false,

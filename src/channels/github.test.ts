@@ -1130,6 +1130,192 @@ describe('GitHubChannel bot username bypass', () => {
     );
   });
 
+  it('registers PR with review requested from bot with requiresTrigger false', async () => {
+    opts = createTestOpts();
+    channel = new GitHubChannel(
+      SECRET,
+      'test-token',
+      [],
+      opts,
+      'seb-writes-code',
+    );
+    await channel.connect();
+    const result = await startServer(opts.app!);
+    server = result.server;
+    port = result.port;
+
+    await sendWebhook(port, {
+      event: 'pull_request',
+      secret: SECRET,
+      payload: {
+        action: 'review_requested',
+        repository: { full_name: 'cmraible/seb' },
+        pull_request: {
+          number: 123,
+          title: 'Add feature',
+          html_url: 'https://github.com/cmraible/seb/pull/123',
+          user: { login: 'cmraible' },
+        },
+        requested_reviewer: { login: 'seb-writes-code' },
+        sender: { login: 'cmraible' },
+      },
+    });
+
+    expect(opts.onMessage).toHaveBeenCalledWith(
+      'gh:cmraible/seb#123',
+      expect.objectContaining({
+        content: expect.stringContaining(
+          'Review requested from @seb-writes-code on PR #123 "Add feature" by cmraible',
+        ),
+      }),
+    );
+    expect(opts.registerGroup).toHaveBeenCalledWith(
+      'gh:cmraible/seb#123',
+      expect.objectContaining({
+        requiresTrigger: false,
+      }),
+    );
+  });
+
+  it('formats review_requested for non-bot reviewer with normal trigger', async () => {
+    opts = createTestOpts();
+    channel = new GitHubChannel(
+      SECRET,
+      'test-token',
+      [],
+      opts,
+      'seb-writes-code',
+    );
+    await channel.connect();
+    const result = await startServer(opts.app!);
+    server = result.server;
+    port = result.port;
+
+    await sendWebhook(port, {
+      event: 'pull_request',
+      secret: SECRET,
+      payload: {
+        action: 'review_requested',
+        repository: { full_name: 'cmraible/seb' },
+        pull_request: {
+          number: 124,
+          title: 'Another feature',
+          html_url: 'https://github.com/cmraible/seb/pull/124',
+          user: { login: 'cmraible' },
+        },
+        requested_reviewer: { login: 'alice' },
+        sender: { login: 'cmraible' },
+      },
+    });
+
+    expect(opts.onMessage).toHaveBeenCalledWith(
+      'gh:cmraible/seb#124',
+      expect.objectContaining({
+        content: expect.stringContaining(
+          'Review requested from @alice on PR #124',
+        ),
+      }),
+    );
+    // PRs always get requiresTrigger: false (groupType === 'pull_request')
+    expect(opts.registerGroup).toHaveBeenCalledWith(
+      'gh:cmraible/seb#124',
+      expect.objectContaining({
+        requiresTrigger: false,
+      }),
+    );
+  });
+
+  it('handles review_requested with team reviewer gracefully', async () => {
+    opts = createTestOpts();
+    channel = new GitHubChannel(
+      SECRET,
+      'test-token',
+      [],
+      opts,
+      'seb-writes-code',
+    );
+    await channel.connect();
+    const result = await startServer(opts.app!);
+    server = result.server;
+    port = result.port;
+
+    await sendWebhook(port, {
+      event: 'pull_request',
+      secret: SECRET,
+      payload: {
+        action: 'review_requested',
+        repository: { full_name: 'cmraible/seb' },
+        pull_request: {
+          number: 125,
+          title: 'Team review PR',
+          html_url: 'https://github.com/cmraible/seb/pull/125',
+          user: { login: 'cmraible' },
+        },
+        requested_team: { name: 'backend-team' },
+        sender: { login: 'cmraible' },
+      },
+    });
+
+    expect(opts.onMessage).toHaveBeenCalledWith(
+      'gh:cmraible/seb#125',
+      expect.objectContaining({
+        content: expect.stringContaining(
+          'Review requested from @backend-team on PR #125',
+        ),
+      }),
+    );
+  });
+
+  it('updates existing group requiresTrigger when bot review is requested', async () => {
+    const registeredGroups: Record<string, any> = {
+      'gh:cmraible/seb#130': {
+        name: 'cmraible/seb#130',
+        folder: 'github_cmraible-seb-130',
+        trigger: '@seb-writes-code',
+        added_at: '2024-01-01T00:00:00.000Z',
+        requiresTrigger: true,
+      },
+    };
+    opts = createTestOpts({
+      registeredGroups: vi.fn(() => registeredGroups),
+    });
+    channel = new GitHubChannel(
+      SECRET,
+      'test-token',
+      [],
+      opts,
+      'seb-writes-code',
+    );
+    await channel.connect();
+    const result = await startServer(opts.app!);
+    server = result.server;
+    port = result.port;
+
+    await sendWebhook(port, {
+      event: 'pull_request',
+      secret: SECRET,
+      payload: {
+        action: 'review_requested',
+        repository: { full_name: 'cmraible/seb' },
+        pull_request: {
+          number: 130,
+          title: 'Existing PR',
+          html_url: 'https://github.com/cmraible/seb/pull/130',
+          user: { login: 'cmraible' },
+        },
+        requested_reviewer: { login: 'seb-writes-code' },
+        sender: { login: 'cmraible' },
+      },
+    });
+
+    expect(opts.registerGroup).toHaveBeenCalledWith(
+      'gh:cmraible/seb#130',
+      expect.objectContaining({
+        requiresTrigger: false,
+      }),
+    );
+  });
+
   it('does not skip trigger when issue is assigned to someone else', async () => {
     opts = createTestOpts();
     channel = new GitHubChannel(
